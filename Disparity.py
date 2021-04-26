@@ -110,3 +110,117 @@ for filename_left in images_l:
     if key == 27:
         break
 cv2.destroyAllWindows()
+
+# %%
+min_disp = 70
+num_disp = 20 * 16
+block_size = 15
+stereo = cv2.StereoBM_create(numDisparities = num_disp, blockSize = block_size)
+stereo.setMinDisparity(min_disp)
+stereo.setDisp12MaxDiff(10)
+stereo.setUniquenessRatio(25)
+stereo.setSpeckleRange(3)
+stereo.setSpeckleWindowSize(3)
+
+margin_g = 20
+margin_d = 10
+contour_thresh = 500
+images_l = sorted(left.glob('*_Left.png'))
+filename_stem = PurePath(images_l[0]).stem
+filename_parts = filename_stem.split('_')
+file_number = filename_parts[0] + '_' + filename_parts[1]
+filename_right = right / (file_number + '_Right.png')
+image_prev_l, image_prev_r = calibrateImages(cv2.imread(str(images_l[0])), cv2.imread(str(filename_right)))
+for filename_left in images_l:
+    filename_stem = PurePath(filename_left).stem
+    filename_parts = filename_stem.split('_')
+    file_number = filename_parts[0] + '_' + filename_parts[1]
+    filename_right = right / (file_number + '_Right.png')
+    img_l = cv2.imread(str(filename_left))
+    img_r = cv2.imread(str(filename_right))
+
+    dst_l, dst_r = calibrateImages(img_l, img_r)
+
+    diff_l = cv2.absdiff(image_prev_l, dst_l)
+    diff_r = cv2.absdiff(image_prev_r, dst_r)
+
+    diff_gray_l = cv2.cvtColor(diff_l, cv2.COLOR_BGR2GRAY)
+    diff_gray_r = cv2.cvtColor(diff_r, cv2.COLOR_BGR2GRAY)
+
+    diff_blur_l, diff_blur_r = gaussFilter(diff_gray_l, diff_gray_r, 21)
+
+    dst_l_copy = dst_l.copy()
+
+    _, thresh_l = cv2.threshold(diff_gray_l, 15, 255, cv2.THRESH_BINARY)
+    _, thresh_r = cv2.threshold(diff_gray_r, 15, 255, cv2.THRESH_BINARY)
+    dilate_l = cv2.dilate(thresh_l, None, iterations=3)
+    dilate_r = cv2.dilate(thresh_r, None, iterations=3)
+    _, contours_l, _ = cv2.findContours(dilate_l, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    _, contours_r, _ = cv2.findContours(dilate_r, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    mask_l = np.zeros(diff_gray_l.shape, dtype=np.uint8)
+    mask_r = np.zeros(diff_gray_r.shape, dtype=np.uint8)
+
+    xl2 = mask_l.shape[1]-1
+    yl2 = mask_l.shape[0]-1
+    xl1 = 0
+    yl1 = 0
+
+    if len(contours_l) > 0:
+        contours_area = np.array([cv2.contourArea(contour) for contour in contours_l])
+        contour_max = contours_l[np.argmax(contours_area)]
+        if cv2.contourArea(contour_max) > contour_thresh:
+            (x, y, w, h) = cv2.boundingRect(contour_max)
+            cv2.rectangle(dst_l_copy, (x, y), (x+w, y+h), (0, 255, 0), 1)
+            
+            xg2 = min(mask_l.shape[1]-1, x+w+margin_g)
+            yg2 = min(mask_l.shape[0]-1, y+h+margin_g)
+            xg1 = max(0, x-margin_g)
+            yg1 = max(0, y-margin_g)
+            mask_l[yg1:yg2, xg1:xg2] = 1
+
+            xl2 = min(mask_l.shape[1]-1, x+w+margin_d)
+            yl2 = min(mask_l.shape[0]-1, y+h+margin_d)
+            xl1 = max(0, x-margin_d)
+            yl1 = max(0, y-margin_d)
+    dst_l_copy = cv2.bitwise_and(dst_l_copy, dst_l_copy, mask=mask_l)
+    
+
+    if len(contours_r) > 0:
+        contours_area = np.array([cv2.contourArea(contour) for contour in contours_r])
+        contour_max = contours_r[np.argmax(contours_area)]
+        if cv2.contourArea(contour_max) > contour_thresh:
+            (x, y, w, h) = cv2.boundingRect(contour_max)
+            
+            xg2 = min(mask_r.shape[1]-1, x+w+margin_g)
+            yg2 = min(mask_r.shape[0]-1, y+h+margin_g)
+            xg1 = max(0, x-margin_g)
+            yg1 = max(0, y-margin_g)
+            mask_r[yg1:yg2, xg1:xg2] = 1
+    
+    gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
+    gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
+
+    gray_l = cv2.bitwise_and(gray_l, gray_l, mask=mask_l)
+    gray_r = cv2.bitwise_and(gray_r, gray_r, mask=mask_r)
+
+    disp = stereo.compute(gray_l, gray_r).astype('float')
+    disp_min = np.min(disp)
+    disp[:yl1,:] = disp_min
+    disp[yl2:,:] = disp_min
+    disp[yl1:yl2,:xl1] = disp_min
+    disp[yl1:yl2,xl2:] = disp_min
+
+
+    cv2.imshow('left' , dst_l_copy)
+    #cv2.imshow('left_diff' , thresh_l)
+    #cv2.imshow('right', dst_r)
+    cv2.imshow('disp' , disp/8192.0)
+
+    key = cv2.waitKey(1)
+    if key == 27:
+        break
+    image_prev_l = dst_l
+    image_prev_r = dst_r
+cv2.destroyAllWindows()
+# %%
