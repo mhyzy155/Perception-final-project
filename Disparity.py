@@ -140,8 +140,8 @@ cv2.destroyAllWindows()
 
 # %%
 max_dist = 5e-8
-#cluster_density = 2*2e-7
-#cluster_minpoints = 500
+cluster_density = 2e-7
+cluster_minpoints = 3
 
 min_disp = 70
 num_disp = 20 * 16
@@ -153,6 +153,34 @@ stereo.setUniquenessRatio(25)
 stereo.setSpeckleRange(3)
 stereo.setSpeckleWindowSize(3)
 
+# create point cloud of background
+static_cloud = o3d.geometry.PointCloud()
+images_l = sorted(left.glob('*_Left.png'))
+for filename_left in images_l[:30]:
+    filename_stem = PurePath(filename_left).stem
+    filename_parts = filename_stem.split('_')
+    file_number = filename_parts[0] + '_' + filename_parts[1]
+    filename_right = right / (file_number + '_Right.png')
+    img_l = cv2.imread(str(filename_left))
+    img_r = cv2.imread(str(filename_right))
+    dst_l, dst_r = calibrateImages(img_l, img_r)
+    gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
+    gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
+    disp = stereo.compute(gray_l, gray_r).astype('float')
+    depth = 1/(disp)
+    depth[depth == np.max(depth)] = np.nan
+    static_cloud += createPointCloud(dst_l, depth)
+    print(len(static_cloud.points))
+o3d.visualization.draw_geometries([static_cloud])
+cl, ind = static_cloud.remove_radius_outlier(nb_points=10, radius=1.0e-9)
+print(len(ind))
+static_cloud = static_cloud.select_by_index(ind)
+o3d.visualization.draw_geometries([static_cloud])
+static_cloud = static_cloud.voxel_down_sample(1.0e-8)
+print(len(static_cloud.points))
+o3d.visualization.draw_geometries([static_cloud])
+
+# %%
 margin_g = 40
 margin_d = 10
 contour_thresh = 500
@@ -162,14 +190,6 @@ filename_parts = filename_stem.split('_')
 file_number = filename_parts[0] + '_' + filename_parts[1]
 filename_right = right / (file_number + '_Right.png')
 image_prev_l, image_prev_r = calibrateImages(cv2.imread(str(images_l[0])), cv2.imread(str(filename_right)))
-
-gray_l = cv2.cvtColor(image_prev_l, cv2.COLOR_BGR2GRAY)
-gray_r = cv2.cvtColor(image_prev_r, cv2.COLOR_BGR2GRAY)
-disp = stereo.compute(gray_l, gray_r).astype('float')
-depth = 1/(disp)
-depth[depth == np.max(depth)] = np.nan
-static_cloud = createPointCloud(image_prev_l, depth)
-#static_cloud = static_cloud.uniform_down_sample(2)
 
 for filename_left in images_l:
     filename_stem = PurePath(filename_left).stem
