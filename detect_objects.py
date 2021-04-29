@@ -5,7 +5,7 @@ from pathlib import Path,PurePath
 import matplotlib.pyplot as plt
 import open3d as o3d
 # %%
-base_path = Path("./without_occlusions")
+base_path = Path("./with_occlusions")
 left = base_path / 'left' 
 right = base_path / 'right'
 # %%
@@ -69,6 +69,8 @@ def getObjectCenter(pcd):
    return center
 # %%
 def projectPointToImage(point):
+   if (point[2] == 0):
+      return np.asarray([u,v])
    fx = new_cam_l[0][0]
    fy = new_cam_l[1][1]
    cx = new_cam_l[0][2]
@@ -94,6 +96,32 @@ max_dist = 5e-8
 cluster_density = 2e-7
 cluster_minpoints = 1000
 
+dt = 1/120
+initCovariance = 10
+updateNoise = 0.01
+measurementNoise = 1
+
+
+kalman = cv2.KalmanFilter(6, 3, 0)
+kalman.transitionMatrix = np.array([
+   [1, 0, 0, dt, 0, 0],
+   [0, 1, 0, 0, dt, 0],
+   [0, 0, 1, 0, 0, dt],
+   [0, 0, 0, 1, 0, 0 ],
+   [0, 0, 0, 0, 1, 0 ],
+   [0, 0, 0, 0, 0, 1 ]
+]).astype('float32')
+kalman.measurementMatrix = np.array([
+   [1, 0, 0, 0, 0, 0],
+   [0, 1, 0, 0, 0, 0],
+   [0, 0, 1, 0, 0, 0]
+]).astype('float32')
+kalman.processNoiseCov = updateNoise*np.eye(6).astype('float32')
+kalman.measurementNoiseCov = measurementNoise*np.eye(3).astype('float32')
+kalman.statePost = np.zeros((6,1)).astype('float32')
+kalman.statePost[2] = 1e-9
+kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
+
 
 for filename in images_l:
    #filename_left = left / filename
@@ -115,6 +143,9 @@ for filename in images_l:
    gray_left = cv2.cvtColor(dst_l_blur, cv2.COLOR_BGR2GRAY)
    gray_right = cv2.cvtColor(dst_r_blur, cv2.COLOR_BGR2GRAY)
 
+   # Update kalman filter
+   kalman.predict()
+
    disp = stereo.compute(gray_left, gray_right).astype('float')
    #disp_median = (cv2.medianBlur((disp*5).astype('uint8'), 7).astype('float32'))/5
    depth = 1/(disp)
@@ -128,15 +159,19 @@ for filename in images_l:
    else:
       distances = np.asarray(pcd.compute_point_cloud_distance(static_cloud))
       pcd = pcd.select_by_index(np.where(distances > max_dist)[0])
-      labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
-      print(labels, np.max(labels)+1)
-      if np.max(labels) > -1:
-         pcd = pcd.select_by_index(np.where(labels == 0)[0])
-         center = getObjectCenter(pcd)
-      
-         image_center_point = projectPointToImage(center)
-         print(center, image_center_point)
-         cv2.circle(dst_l, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
+      if pcd.has_points():
+         labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
+         #print(labels, np.max(labels)+1)
+         if np.max(labels) > -1:
+            pcd = pcd.select_by_index(np.where(labels == 0)[0])
+            center = getObjectCenter(pcd)         
+
+            #Kalman measurement
+            kalman.correct(np.reshape(center, (3,1)).astype('float32'))
+         
+      image_center_point = projectPointToImage(kalman.statePost)
+      print(kalman.statePost, image_center_point)
+      cv2.circle(dst_l, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
       #draw_labels_on_model(pcd, labels)
 
    cv2.imshow('left' , dst_l)
@@ -147,7 +182,7 @@ for filename in images_l:
    if key == 27:
       break
    #o3d.visualization.draw_geometries([pcd])
-#cv2.destroyAllWindows()
+cv2.destroyAllWindows()
 # %%
 
 # %%
