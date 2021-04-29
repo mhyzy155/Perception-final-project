@@ -49,7 +49,7 @@ def createPointCloud(rgb_img, depth):
     #   o3d.camera.PinholeCameraIntrinsicParameters.PrimeSenseDefault
     #))
    # Flip it, otherwise the pointcloud will be upside down
-   pcd.transform([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
+   #pcd.transform([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
    return pcd
 # %%
 def draw_labels_on_model(pcl,labels):
@@ -61,6 +61,21 @@ def draw_labels_on_model(pcl,labels):
     colors[labels < 0] = 0
     pcl_temp.colors = o3d.utility.Vector3dVector(colors[:, :3])
     o3d.visualization.draw_geometries([pcl_temp])
+
+# %%
+def getObjectCenter(pcd):
+   points = np.asarray(pcd.points)
+   center = np.mean(points, axis=0)
+   return center
+# %%
+def projectPointToImage(point):
+   fx = new_cam_l[0][0]
+   fy = new_cam_l[1][1]
+   cx = new_cam_l[0][2]
+   cy = new_cam_l[1][2]
+   u = cx + fx*point[0]/point[2]
+   v = cy + fy*point[1]/point[2]
+   return np.asarray([u,v])
 # %% Depth camera setup
 min_disp = 70
 num_disp = 10 * 16
@@ -72,7 +87,7 @@ stereo.setUniquenessRatio(10)
 stereo.setSpeckleRange(3)
 stereo.setSpeckleWindowSize(3)
 # %%
-#images_l = sorted(left.glob('*_Left.png'))
+images_l = sorted(left.glob('*_Left.png'))
 
 static_cloud = None
 max_dist = 5e-8
@@ -80,8 +95,9 @@ cluster_density = 2e-7
 cluster_minpoints = 1000
 
 
-for filename in test_images:
-   filename_left = left / filename
+for filename in images_l:
+   #filename_left = left / filename
+   filename_left = filename
    #print(PurePath(filename).stem)
    filename_stem = PurePath(filename_left).stem
    filename_parts = filename_stem.split('_')
@@ -114,7 +130,13 @@ for filename in test_images:
       pcd = pcd.select_by_index(np.where(distances > max_dist)[0])
       labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
       print(labels, np.max(labels)+1)
-      pcd = pcd.select_by_index(np.where(labels == 0)[0])
+      if np.max(labels) > -1:
+         pcd = pcd.select_by_index(np.where(labels == 0)[0])
+         center = getObjectCenter(pcd)
+      
+         image_center_point = projectPointToImage(center)
+         print(center, image_center_point)
+         cv2.circle(dst_l, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
       #draw_labels_on_model(pcd, labels)
 
    cv2.imshow('left' , dst_l)
@@ -124,8 +146,8 @@ for filename in test_images:
    key = cv2.waitKey(16)
    if key == 27:
       break
-   o3d.visualization.draw_geometries([pcd])
-cv2.destroyAllWindows()
+   #o3d.visualization.draw_geometries([pcd])
+#cv2.destroyAllWindows()
 # %%
 
 # %%
