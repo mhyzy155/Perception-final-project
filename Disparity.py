@@ -28,14 +28,14 @@ def calibrateImages(img_l, img_r):
     return dst_l, dst_r
 
 def createPointCloud(rgb_img, depth):
-    print(depth.astype('float32').dtype)
-    depth = o3d.geometry.Image(depth.astype('float32'))
-    rgb = o3d.geometry.Image(rgb_img.astype('float32'))
-    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+   #print(depth.astype('float32'))
+   depth = o3d.geometry.Image(depth.astype('float32'))
+   rgb = o3d.geometry.Image(rgb_img.astype('int8'))
+   rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
       rgb, depth,
-      depth_trunc=1000.0
-    )
-    pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
+      depth_scale=1000
+   )
+   pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
     rgbd,
     o3d.camera.PinholeCameraIntrinsic(
         rgb_img.shape[1],
@@ -45,9 +45,36 @@ def createPointCloud(rgb_img, depth):
         new_cam_l[0][2],
         new_cam_l[1][2]
         ))
-    # Flip it, otherwise the pointcloud will be upside down
-    pcd.transform([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
-    return pcd
+    #o3d.camera.PinholeCameraIntrinsic(
+    #   o3d.camera.PinholeCameraIntrinsicParameters.PrimeSenseDefault
+    #))
+   # Flip it, otherwise the pointcloud will be upside down
+   #pcd.transform([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
+   return pcd
+
+def draw_labels_on_model(pcl,labels):
+    cmap = plt.get_cmap("tab20")
+    pcl_temp = pcl
+    max_label = labels.max()
+    print("scan has %d clusters" % (max_label + 1))
+    colors = cmap(labels / (max_label if max_label > 0 else 1))
+    colors[labels < 0] = 0
+    pcl_temp.colors = o3d.utility.Vector3dVector(colors[:, :3])
+    o3d.visualization.draw_geometries([pcl_temp])
+
+def getObjectCenter(pcd):
+   points = np.asarray(pcd.points)
+   center = np.mean(points, axis=0)
+   return center
+
+def projectPointToImage(point):
+   fx = new_cam_l[0][0]
+   fy = new_cam_l[1][1]
+   cx = new_cam_l[0][2]
+   cy = new_cam_l[1][2]
+   u = cx + fx*point[0]/point[2]
+   v = cy + fy*point[1]/point[2]
+   return np.asarray([u,v])
 
 # %%
 def biFilter(img_l, img_r, k_size, sigma):
@@ -112,6 +139,10 @@ for filename_left in images_l:
 cv2.destroyAllWindows()
 
 # %%
+max_dist = 5e-8
+#cluster_density = 2*2e-7
+#cluster_minpoints = 500
+
 min_disp = 70
 num_disp = 20 * 16
 block_size = 15
@@ -122,7 +153,7 @@ stereo.setUniquenessRatio(25)
 stereo.setSpeckleRange(3)
 stereo.setSpeckleWindowSize(3)
 
-margin_g = 20
+margin_g = 40
 margin_d = 10
 contour_thresh = 500
 images_l = sorted(left.glob('*_Left.png'))
@@ -131,6 +162,15 @@ filename_parts = filename_stem.split('_')
 file_number = filename_parts[0] + '_' + filename_parts[1]
 filename_right = right / (file_number + '_Right.png')
 image_prev_l, image_prev_r = calibrateImages(cv2.imread(str(images_l[0])), cv2.imread(str(filename_right)))
+
+gray_l = cv2.cvtColor(image_prev_l, cv2.COLOR_BGR2GRAY)
+gray_r = cv2.cvtColor(image_prev_r, cv2.COLOR_BGR2GRAY)
+disp = stereo.compute(gray_l, gray_r).astype('float')
+depth = 1/(disp)
+depth[depth == np.max(depth)] = np.nan
+static_cloud = createPointCloud(image_prev_l, depth)
+#static_cloud = static_cloud.uniform_down_sample(2)
+
 for filename_left in images_l:
     filename_stem = PurePath(filename_left).stem
     filename_parts = filename_stem.split('_')
@@ -210,6 +250,31 @@ for filename_left in images_l:
     disp[yl2:,:] = disp_min
     disp[yl1:yl2,:xl1] = disp_min
     disp[yl1:yl2,xl2:] = disp_min
+
+    depth = 1/(disp)
+    depth[depth == np.max(depth)] = np.nan
+
+
+    pcd = createPointCloud(dst_l, depth)
+    #pcd = pcd.uniform_down_sample(2)
+    distances = np.asarray(pcd.compute_point_cloud_distance(static_cloud))
+    pcd = pcd.select_by_index(np.where(distances > max_dist)[0])
+    #labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
+    #if len(labels) > 0:
+    #    print(labels, np.max(labels)+1)
+    #    if np.max(labels) > -1:
+    #        pcd = pcd.select_by_index(np.where(labels == 0)[0])
+    #        center = getObjectCenter(pcd)
+    #    
+    #        image_center_point = projectPointToImage(center)
+    #        print(center, image_center_point)
+    #        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
+        #draw_labels_on_model(pcd, labels)
+    if len(pcd.points)>500:
+        center = getObjectCenter(pcd)
+        image_center_point = projectPointToImage(center)
+        print(center, image_center_point)
+        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
 
 
     cv2.imshow('left' , dst_l_copy)
