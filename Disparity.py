@@ -180,6 +180,54 @@ static_cloud = static_cloud.voxel_down_sample(1.0e-8)
 print(len(static_cloud.points))
 o3d.visualization.draw_geometries([static_cloud])
 
+#%% prediction part
+import torch, torchvision
+
+import numpy as np
+import cv2
+
+from torch import nn, optim
+import torch.nn.functional as F
+import torchvision.transforms as T
+from torchvision import models
+
+FILE_PATH='best_model_state.bin'
+classes=['book', 'box', 'cup']
+
+# %%
+def create_model(n_classes):
+  model = models.resnet34()
+  n_features = model.fc.in_features
+  model.fc = nn.Linear(n_features, n_classes)
+
+  return model.to(device)
+#%%
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+trained_model = create_model(len(classes))
+trained_model.load_state_dict(torch.load(FILE_PATH, map_location=torch.device('cpu')))
+trained_model.eval()
+
+#%%
+mean_nums = [0.485, 0.456, 0.406]
+std_nums = [0.229, 0.224, 0.225]
+
+transforms = {'test': T.Compose([
+  T.Resize((256, 256)),
+  T.ToTensor(),
+  T.Normalize(mean_nums, std_nums)
+])
+}
+from PIL import Image
+from matplotlib import cm
+def prediction(model, image):
+  img = Image.fromarray(image.astype('uint8'), 'RGB')
+#   img = img.convert('RGB')
+  img = transforms['test'](img).unsqueeze(0)
+
+  pred = model(img.to(device))
+  pred = F.softmax(pred, dim=1)
+  return pred.detach().cpu().numpy().flatten()
 # %%
 margin_g = 40
 margin_d = 10
@@ -225,14 +273,16 @@ for filename_left in images_l:
     yl2 = mask_l.shape[0]-1
     xl1 = 0
     yl1 = 0
-
+    predict_flag=False
     if len(contours_l) > 0:
         contours_area = np.array([cv2.contourArea(contour) for contour in contours_l])
         contour_max = contours_l[np.argmax(contours_area)]
         if cv2.contourArea(contour_max) > contour_thresh:
-            (x, y, w, h) = cv2.boundingRect(contour_max)
+            (x, y, w, h) = cv2.boundingRect(contour_max)            
+            if w>0 and h>0:
+                to_predict=dst_l_copy[y:(y+h), x:(x+w)]
+                predict_flag=True
             cv2.rectangle(dst_l_copy, (x, y), (x+w, y+h), (0, 255, 0), 1)
-            
             xg2 = min(mask_l.shape[1]-1, x+w+margin_g)
             yg2 = min(mask_l.shape[0]-1, y+h+margin_g)
             xg1 = max(0, x-margin_g)
@@ -293,14 +343,19 @@ for filename_left in images_l:
     if len(pcd.points)>500:
         center = getObjectCenter(pcd)
         image_center_point = projectPointToImage(center)
-        print(center, image_center_point)
+        # print(center, image_center_point)
         cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
-
-
+    out=""
+    if predict_flag:
+        pred = prediction(trained_model, to_predict)
+        out = classes[np.argmax(pred)] + str(np.max(pred))
+        # cv2.imshow('left' , to_predict)
+    
+    cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
     #cv2.imshow('left_diff' , thresh_l)
     #cv2.imshow('right', dst_r)
-    cv2.imshow('disp' , disp/8192.0)
+    # cv2.imshow('disp' , disp/8192.0)
 
     key = cv2.waitKey(1)
     if key == 27:
