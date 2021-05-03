@@ -133,6 +133,7 @@ dmypy.json
 /calibration_copy
 /without_occlusions
 /without_occlusions2
+/with_occlusions
 *.zip
 Calibration.ipynb
 Disparity.ipynb

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import open3d as o3d
 
 # %%
-base_path = Path("./without_occlusions")
+base_path = Path("./with_occlusions")
 left = base_path / 'left' 
 right = base_path / 'right'
 
@@ -228,6 +228,32 @@ def prediction(model, image):
   pred = model(img.to(device))
   pred = F.softmax(pred, dim=1)
   return pred.detach().cpu().numpy().flatten()
+
+# %%
+dt = 1/120
+initCovariance = 10
+updateNoise = 0.001
+measurementNoise = 1
+
+kalman = cv2.KalmanFilter(6, 3, 0)
+kalman.transitionMatrix = np.array([
+   [1, 0, 0, dt, 0, 0],
+   [0, 1, 0, 0, dt, 0],
+   [0, 0, 1, 0, 0, dt],
+   [0, 0, 0, 1, 0, 0 ],
+   [0, 0, 0, 0, 1, 0 ],
+   [0, 0, 0, 0, 0, 1 ]
+]).astype('float32')
+kalman.measurementMatrix = np.array([
+   [1, 0, 0, 0, 0, 0],
+   [0, 1, 0, 0, 0, 0],
+   [0, 0, 1, 0, 0, 0]
+]).astype('float32')
+kalman.processNoiseCov = updateNoise*np.eye(6).astype('float32')
+kalman.measurementNoiseCov = measurementNoise*np.eye(3).astype('float32')
+kalman.statePost = np.zeros((6,1)).astype('float32')
+kalman.statePost[2] = 1e-9
+kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
 # %%
 margin_g = 40
 margin_d = 10
@@ -324,6 +350,8 @@ for filename_left in images_l:
     depth = 1/(disp)
     depth[depth == np.max(depth)] = np.nan
 
+    # Kalman update
+    kalman.predict()
 
     pcd = createPointCloud(dst_l, depth)
     #pcd = pcd.uniform_down_sample(2)
@@ -342,6 +370,8 @@ for filename_left in images_l:
         #draw_labels_on_model(pcd, labels)
     if len(pcd.points)>500:
         center = getObjectCenter(pcd)
+        #Kalman update
+        kalman.correct(np.reshape(center, (3,1)).astype('float32'))
         image_center_point = projectPointToImage(center)
         # print(center, image_center_point)
         cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
@@ -350,7 +380,9 @@ for filename_left in images_l:
         pred = prediction(trained_model, to_predict)
         out = classes[np.argmax(pred)] + str(np.max(pred))
         # cv2.imshow('left' , to_predict)
-    
+    kalman_center_point = projectPointToImage(kalman.statePost)
+    cv2.circle(dst_l_copy, (int(kalman_center_point[0]), int(kalman_center_point[1])), 5, (0,0,255))
+
     cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
     #cv2.imshow('left_diff' , thresh_l)
