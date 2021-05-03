@@ -231,9 +231,9 @@ def prediction(model, image):
 
 # %%
 dt = 1/120
-initCovariance = 10
+initCovariance = 10000
 updateNoise = 0.001
-measurementNoise = 1
+measurementNoise = 100
 
 kalman = cv2.KalmanFilter(6, 3, 0)
 kalman.transitionMatrix = np.array([
@@ -368,7 +368,8 @@ for filename_left in images_l:
     #        print(center, image_center_point)
     #        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
         #draw_labels_on_model(pcd, labels)
-    if len(pcd.points)>500:
+    print("Number of points in pointcloud: ", len(pcd.points))
+    if len(pcd.points)>3000:
         center = getObjectCenter(pcd)
         #Kalman update
         kalman.correct(np.reshape(center, (3,1)).astype('float32'))
