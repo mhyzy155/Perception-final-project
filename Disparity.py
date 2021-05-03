@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import open3d as o3d
 
 # %%
-base_path = Path("./with_occlusions")
+base_path = Path("./without_occlusions")
 left = base_path / 'left' 
 right = base_path / 'right'
 
@@ -258,6 +258,9 @@ kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
 margin_g = 40
 margin_d = 10
 contour_thresh = 500
+threshold = 1.0e-9
+trans_init = np.asarray([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+pcd_old = o3d.geometry.PointCloud()
 images_l = sorted(left.glob('*_Left.png'))
 filename_stem = PurePath(images_l[0]).stem
 filename_parts = filename_stem.split('_')
@@ -357,6 +360,46 @@ for filename_left in images_l:
     #pcd = pcd.uniform_down_sample(2)
     distances = np.asarray(pcd.compute_point_cloud_distance(static_cloud))
     pcd = pcd.select_by_index(np.where(distances > max_dist)[0])
+    #pcd_old.estimate_normals()
+    #pcd.estimate_normals()
+    voxel_size = 1.0e-9
+    if len(pcd.points) > 1500:
+        if len(pcd_old.points) > 0:
+            pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.5,
+                                max_nn=30),fast_normal_computation=True)
+            pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.5,
+                                max_nn=30),fast_normal_computation=True)
+            source_features = o3d.pipelines.registration.compute_fpfh_feature(pcd_old, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*2, max_nn=100))
+            target_features = o3d.pipelines.registration.compute_fpfh_feature(pcd, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*2, max_nn=100))
+            point_to_point =  o3d.pipelines.registration.TransformationEstimationPointToPoint(False)
+            ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+                pcd_old, pcd, 
+                source_features, target_features, True, 
+                voxel_size * 2,
+                point_to_point, criteria = o3d.pipelines.registration.RANSACConvergenceCriteria(4000000, 500))
+            pcd_old.transform(ransac_result.transformation)
+            print("Initial alignment")
+            evaluation = o3d.pipelines.registration.evaluate_registration(pcd_old, pcd, threshold, trans_init)
+            print(evaluation)
+            point_to_plane =  o3d.pipelines.registration.TransformationEstimationPointToPlane()
+            icp_result = o3d.pipelines.registration.registration_icp(
+                pcd_old, pcd, threshold, trans_init,
+                point_to_plane, o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
+            pcd_old.transform(icp_result.transformation)
+            pcd.paint_uniform_color([1, 0.706, 0])
+            pcd_old.paint_uniform_color([0, 0.651, 0.929])
+            o3d.visualization.draw_geometries([pcd_old, pcd])
+        pcd_old += pcd
+        pcd_old.paint_uniform_color([0, 0.651, 0.929])
+        print('before:', len(pcd_old.points))
+        cl, ind = pcd_old.remove_radius_outlier(nb_points=15, radius=1.0e-8)
+        print('left:', len(ind))
+        pcd_old = pcd_old.select_by_index(ind)
+        #o3d.visualization.draw_geometries([pcd_old])
+        pcd_old = pcd_old.voxel_down_sample(1.0e-9)
+        print('after downsampling:', len(pcd_old.points))
+        #o3d.visualization.draw_geometries([pcd_old])
+
     #labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
     #if len(labels) > 0:
     #    print(labels, np.max(labels)+1)
@@ -368,9 +411,9 @@ for filename_left in images_l:
     #        print(center, image_center_point)
     #        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
         #draw_labels_on_model(pcd, labels)
-    print("Number of points in pointcloud: ", len(pcd.points))
-    if len(pcd.points)>3000:
-        center = getObjectCenter(pcd)
+    print("Number of points in pointcloud: ", len(pcd_old.points))
+    if len(pcd_old.points)>3000:
+        center = getObjectCenter(pcd_old)
         #Kalman update
         kalman.correct(np.reshape(center, (3,1)).astype('float32'))
         image_center_point = projectPointToImage(center)
