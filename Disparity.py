@@ -203,14 +203,16 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 from torchvision import models
 
-FILE_PATH='best_model_state.bin'
+FILE_PATH='Models/Dense169.bin'
 classes=['book', 'box', 'cup']
 
 # %%
 def create_model(n_classes):
-  model = models.resnet34()
-  n_features = model.fc.in_features
-  model.fc = nn.Linear(n_features, n_classes)
+  model = models.densenet169()
+  #Uncomment if you use ResNet model. It specify how many featurers and classes we use
+  #For densenet it does not work, check gow to do it?
+#   n_features = model.fc.in_features
+#   model.fc = nn.Linear(n_features, n_classes)
 
   return model.to(device)
 #%%
@@ -482,9 +484,9 @@ for filename_left in images_l[2:]:
         # print(center, image_center_point)
         cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
     out=""
-    if predict_flag:
+    if predict_flag:        
         pred = prediction(trained_model, to_predict)
-        out = classes[np.argmax(pred)] + str(np.max(pred))
+        out = classes[np.argmax(pred[0:3])] + str(np.max(pred[0:3]))
         # cv2.imshow('left' , to_predict)
     kalman_center_point = projectPointToImage(kalman.statePost)
     cv2.circle(dst_l_copy, (int(kalman_center_point[0]), int(kalman_center_point[1])), 5, (0,0,255))
