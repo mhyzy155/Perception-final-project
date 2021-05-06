@@ -245,7 +245,8 @@ def prediction(model, image):
 dt = 1/120
 initCovariance = 10000
 updateNoise = 0.001
-measurementNoise = 0.1
+measurementNoise = 10
+vel_fac = 0.1
 
 kalman = cv2.KalmanFilter(6, 3, 0)
 kalman.transitionMatrix = np.array([
@@ -261,7 +262,7 @@ kalman.measurementMatrix = np.array([
    [0, 1, 0, 0, 0, 0],
    [0, 0, 1, 0, 0, 0]
 ]).astype('float32')
-kalman.processNoiseCov = updateNoise*np.eye(6).astype('float32')
+kalman.processNoiseCov = updateNoise*np.diag([1, 1, 1, vel_fac, vel_fac, vel_fac]).astype('float32')
 kalman.measurementNoiseCov = measurementNoise*np.eye(3).astype('float32')
 kalman.statePost = np.zeros((6,1)).astype('float32')
 kalman.statePost[2] = 1e-9
@@ -452,7 +453,7 @@ for filename_left in images_l[2:]:
         #draw_labels_on_model(pcd, labels)
     # print("Number of points in pointcloud: ", len(pcd_old.points))
 
-    if len(pcd.points)>200:
+    if len(pcd.points)>200 and roi_x < 1230 and roi_y > 300:
         roi_area = w*h
         print('Roi area:',roi_area)
         roi_area_max = max(roi_area_max, roi_area)
@@ -466,7 +467,7 @@ for filename_left in images_l[2:]:
         kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
 
 
-    if len(pcd.points)>200 and roi_ratio > 0.7:
+    if len(pcd.points)>200 and roi_x < 1230 and roi_y > 300 and roi_ratio > 0.6:
         #print(len(pcd.points))
         #o3d.visualization.draw_geometries([pcd])
         pcd = pcd.voxel_down_sample(1.0e-8)
@@ -487,6 +488,12 @@ for filename_left in images_l[2:]:
         # cv2.imshow('left' , to_predict)
     kalman_center_point = projectPointToImage(kalman.statePost)
     cv2.circle(dst_l_copy, (int(kalman_center_point[0]), int(kalman_center_point[1])), 5, (0,0,255))
+    cv2.putText(dst_l_copy, str(kalman.statePost[0]) ,(10,100), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, str(kalman.statePost[1]) ,(10,150), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, str(kalman.statePost[2]) ,(10,200), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, str(kalman.statePost[3]) ,(10,250), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, str(kalman.statePost[4]) ,(10,300), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, str(kalman.statePost[5]) ,(10,350), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
 
     cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
