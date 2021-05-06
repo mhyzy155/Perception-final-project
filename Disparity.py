@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import open3d as o3d
 
 # %%
-base_path = Path("./without_occlusions")
+base_path = Path("./with_occlusions")
 left = base_path / 'left' 
 right = base_path / 'right'
 
@@ -65,6 +65,9 @@ def draw_labels_on_model(pcl,labels):
 def getObjectCenter(pcd):
    points = np.asarray(pcd.points)
    center = np.mean(points, axis=0)
+   #bounding = pcd.get_axis_aligned_bounding_box()
+   #center = bounding.get_center()
+   #center = pcd.get_center()
    return center
 
 def projectPointToImage(point):
@@ -75,6 +78,15 @@ def projectPointToImage(point):
    u = cx + fx*point[0]/point[2]
    v = cy + fy*point[1]/point[2]
    return np.asarray([u,v])
+
+def projectImageToPoint(point):
+    fx = new_cam_l[0][0]
+    fy = new_cam_l[1][1]
+    cx = new_cam_l[0][2]
+    cy = new_cam_l[1][2]
+    u = (point[0]-cx)/fx
+    v = (point[1]-cy)/fy
+    return np.asarray([u,v,1])
 
 # %%
 def biFilter(img_l, img_r, k_size, sigma):
@@ -145,7 +157,7 @@ cluster_minpoints = 3
 
 min_disp = 70
 num_disp = 20 * 16
-block_size = 15
+block_size = 31
 stereo = cv2.StereoBM_create(numDisparities = num_disp, blockSize = block_size)
 stereo.setMinDisparity(min_disp)
 stereo.setDisp12MaxDiff(10)
@@ -233,7 +245,7 @@ def prediction(model, image):
 dt = 1/120
 initCovariance = 10000
 updateNoise = 0.001
-measurementNoise = 100
+measurementNoise = 0.1
 
 kalman = cv2.KalmanFilter(6, 3, 0)
 kalman.transitionMatrix = np.array([
@@ -257,9 +269,16 @@ kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
 # %%
 margin_g = 40
 margin_d = 10
+h, w = 0, 0
+roi_counter = 0
+roi_area_max = 1
+roi_x = 0
+roi_y = 0
 contour_thresh = 500
-threshold = 1.0e-9
+threshold = 1.0e-10
 trans_init = np.asarray([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+point_to_point =  o3d.pipelines.registration.TransformationEstimationPointToPoint(False)
+point_to_plane =  o3d.pipelines.registration.TransformationEstimationPointToPlane()
 pcd_old = o3d.geometry.PointCloud()
 images_l = sorted(left.glob('*_Left.png'))
 filename_stem = PurePath(images_l[0]).stem
@@ -267,8 +286,15 @@ filename_parts = filename_stem.split('_')
 file_number = filename_parts[0] + '_' + filename_parts[1]
 filename_right = right / (file_number + '_Right.png')
 image_prev_l, image_prev_r = calibrateImages(cv2.imread(str(images_l[0])), cv2.imread(str(filename_right)))
+image_prev_l, image_prev_r = gaussFilter(image_prev_l, image_prev_r, 7)
+filename_stem = PurePath(images_l[1]).stem
+filename_parts = filename_stem.split('_')
+file_number = filename_parts[0] + '_' + filename_parts[1]
+filename_right = right / (file_number + '_Right.png')
+image_prev2_l, image_prev2_r = calibrateImages(cv2.imread(str(images_l[1])), cv2.imread(str(filename_right)))
+image_prev2_l, image_prev2_r = gaussFilter(image_prev2_l, image_prev2_r, 7)
 
-for filename_left in images_l:
+for filename_left in images_l[2:]:
     filename_stem = PurePath(filename_left).stem
     filename_parts = filename_stem.split('_')
     file_number = filename_parts[0] + '_' + filename_parts[1]
@@ -277,6 +303,7 @@ for filename_left in images_l:
     img_r = cv2.imread(str(filename_right))
 
     dst_l, dst_r = calibrateImages(img_l, img_r)
+    dst_l, dst_r = gaussFilter(dst_l, dst_r, 7)
 
     diff_l = cv2.absdiff(image_prev_l, dst_l)
     diff_r = cv2.absdiff(image_prev_r, dst_r)
@@ -307,7 +334,9 @@ for filename_left in images_l:
         contours_area = np.array([cv2.contourArea(contour) for contour in contours_l])
         contour_max = contours_l[np.argmax(contours_area)]
         if cv2.contourArea(contour_max) > contour_thresh:
-            (x, y, w, h) = cv2.boundingRect(contour_max)            
+            (x, y, w, h) = cv2.boundingRect(contour_max)
+            roi_x = int(x+w/2)
+            roi_y = int(y+h/2)            
             if w>0 and h>0:
                 to_predict=dst_l_copy[y:(y+h), x:(x+w)]
                 predict_flag=True
@@ -322,7 +351,7 @@ for filename_left in images_l:
             yl2 = min(mask_l.shape[0]-1, y+h+margin_d)
             xl1 = max(0, x-margin_d)
             yl1 = max(0, y-margin_d)
-    dst_l_copy = cv2.bitwise_and(dst_l_copy, dst_l_copy, mask=mask_l)
+    #dst_l_copy = cv2.bitwise_and(dst_l_copy, dst_l_copy, mask=mask_l)
     
 
     if len(contours_r) > 0:
@@ -357,48 +386,58 @@ for filename_left in images_l:
     kalman.predict()
 
     pcd = createPointCloud(dst_l, depth)
-    #pcd = pcd.uniform_down_sample(2)
     distances = np.asarray(pcd.compute_point_cloud_distance(static_cloud))
     pcd = pcd.select_by_index(np.where(distances > max_dist)[0])
-    #pcd_old.estimate_normals()
-    #pcd.estimate_normals()
-    voxel_size = 1.0e-9
-    if len(pcd.points) > 1500:
-        if len(pcd_old.points) > 0:
-            pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.5,
-                                max_nn=30),fast_normal_computation=True)
-            pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.5,
-                                max_nn=30),fast_normal_computation=True)
-            source_features = o3d.pipelines.registration.compute_fpfh_feature(pcd_old, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*2, max_nn=100))
-            target_features = o3d.pipelines.registration.compute_fpfh_feature(pcd, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*2, max_nn=100))
-            point_to_point =  o3d.pipelines.registration.TransformationEstimationPointToPoint(False)
-            ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-                pcd_old, pcd, 
-                source_features, target_features, True, 
-                voxel_size * 2,
-                point_to_point, criteria = o3d.pipelines.registration.RANSACConvergenceCriteria(4000000, 500))
-            pcd_old.transform(ransac_result.transformation)
-            print("Initial alignment")
-            evaluation = o3d.pipelines.registration.evaluate_registration(pcd_old, pcd, threshold, trans_init)
-            print(evaluation)
-            point_to_plane =  o3d.pipelines.registration.TransformationEstimationPointToPlane()
-            icp_result = o3d.pipelines.registration.registration_icp(
-                pcd_old, pcd, threshold, trans_init,
-                point_to_plane, o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
-            pcd_old.transform(icp_result.transformation)
-            pcd.paint_uniform_color([1, 0.706, 0])
-            pcd_old.paint_uniform_color([0, 0.651, 0.929])
-            o3d.visualization.draw_geometries([pcd_old, pcd])
-        pcd_old += pcd
-        pcd_old.paint_uniform_color([0, 0.651, 0.929])
-        print('before:', len(pcd_old.points))
-        cl, ind = pcd_old.remove_radius_outlier(nb_points=15, radius=1.0e-8)
-        print('left:', len(ind))
-        pcd_old = pcd_old.select_by_index(ind)
-        #o3d.visualization.draw_geometries([pcd_old])
-        pcd_old = pcd_old.voxel_down_sample(1.0e-9)
-        print('after downsampling:', len(pcd_old.points))
-        #o3d.visualization.draw_geometries([pcd_old])
+    #print('before:', len(pcd.points))
+    #cl, ind = pcd.remove_radius_outlier(nb_points=30, radius=5.0e-9)
+    #print('after:', len(pcd.points))
+    #pcd = pcd.select_by_index(ind)
+    
+    # voxel_size = 1.0e-9
+    # if len(pcd.points) > 1500:
+    #     cl, ind = pcd.remove_radius_outlier(nb_points=30, radius=5.0e-9)
+    #     pcd = pcd.select_by_index(ind)
+    #     if len(pcd_old.points) > 0:
+    #         pcd_old.paint_uniform_color([0, 0.651, 0.929])
+    #         pcd.paint_uniform_color([1, 0.706, 0])
+    #         o3d.visualization.draw_geometries([pcd_old, pcd])
+
+    #         #pcd_old.estimate_normals()
+    #         #pcd.estimate_normals()
+    #         pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100), fast_normal_computation=True)
+    #         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100), fast_normal_computation=True)
+    #         source_features = o3d.pipelines.registration.compute_fpfh_feature(pcd_old, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100))
+    #         target_features = o3d.pipelines.registration.compute_fpfh_feature(pcd, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100))
+            
+    #         ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+    #             pcd_old, pcd, 
+    #             source_features, target_features, True, 
+    #             voxel_size * 10,
+    #             point_to_point, criteria = o3d.pipelines.registration.RANSACConvergenceCriteria(1000000, 500))
+    #         pcd_old.transform(ransac_result.transformation)
+    #         o3d.visualization.draw_geometries([pcd_old, pcd])
+
+    #         print("Initial alignment")
+    #         evaluation = o3d.pipelines.registration.evaluate_registration(pcd_old, pcd, threshold, trans_init)
+    #         print(evaluation)
+
+    #         pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=30), fast_normal_computation=True)
+    #         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=30), fast_normal_computation=True)
+    #         icp_result = o3d.pipelines.registration.registration_icp(
+    #             pcd_old, pcd, threshold*10, trans_init,
+    #             point_to_plane, o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=5000))
+    #         #pcd_old.transform(icp_result.transformation)
+    #         #o3d.visualization.draw_geometries([pcd_old, pcd])
+    #     pcd_old += pcd
+    #     pcd_old.paint_uniform_color([0, 0.651, 0.929])
+    #     print('before:', len(pcd_old.points))
+    #     cl, ind = pcd_old.remove_radius_outlier(nb_points=15, radius=1.0e-8)
+    #     print('left:', len(ind))
+    #     pcd_old = pcd_old.select_by_index(ind)
+    #     #o3d.visualization.draw_geometries([pcd_old])
+    #     pcd_old = pcd_old.voxel_down_sample(2.0e-9)
+    #     print('after downsampling:', len(pcd_old.points))
+    #     #o3d.visualization.draw_geometries([pcd_old])
 
     #labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
     #if len(labels) > 0:
@@ -411,9 +450,31 @@ for filename_left in images_l:
     #        print(center, image_center_point)
     #        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
         #draw_labels_on_model(pcd, labels)
-    print("Number of points in pointcloud: ", len(pcd_old.points))
-    if len(pcd_old.points)>3000:
-        center = getObjectCenter(pcd_old)
+    # print("Number of points in pointcloud: ", len(pcd_old.points))
+
+    if len(pcd.points)>200:
+        roi_area = w*h
+        print('Roi area:',roi_area)
+        roi_area_max = max(roi_area_max, roi_area)
+        roi_ratio = roi_area/roi_area_max
+        print('RoiRatio:',roi_ratio)
+
+    if roi_x < 420 and roi_y > 560:
+        roi_area_max = 1
+        kalman.statePost = np.zeros((6,1)).astype('float32')
+        kalman.statePost[2] = 1e-9
+        kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
+
+
+    if len(pcd.points)>200 and roi_ratio > 0.7:
+        #print(len(pcd.points))
+        #o3d.visualization.draw_geometries([pcd])
+        pcd = pcd.voxel_down_sample(1.0e-8)
+        #print(len(pcd.points))
+        #o3d.visualization.draw_geometries([pcd])
+        center = getObjectCenter(pcd)
+        M = projectImageToPoint([roi_x, roi_y])
+        center = np.dot(M, center)/np.dot(M,M) * M
         #Kalman update
         kalman.correct(np.reshape(center, (3,1)).astype('float32'))
         image_center_point = projectPointToImage(center)
@@ -429,14 +490,16 @@ for filename_left in images_l:
 
     cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
-    #cv2.imshow('left_diff' , thresh_l)
+    #cv2.imshow('left_diff' , diff_blur_l)
     #cv2.imshow('right', dst_r)
     # cv2.imshow('disp' , disp/8192.0)
 
     key = cv2.waitKey(1)
     if key == 27:
         break
-    image_prev_l = dst_l
-    image_prev_r = dst_r
+    image_prev_l = image_prev2_l
+    image_prev_r = image_prev2_r
+    image_prev2_l = dst_l
+    image_prev2_r = dst_r
 cv2.destroyAllWindows()
 # %%
