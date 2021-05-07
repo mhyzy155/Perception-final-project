@@ -20,6 +20,7 @@ map2_l = np.load("map2_l.npy")
 map2_r = np.load("map2_r.npy")
 new_cam_l = np.load("newcameramtx_l.npy")
 new_cam_r = np.load("newcameramtx_r.npy")
+Q_mat = np.load("Q_mat.npy")
 
 # %%
 def calibrateImages(img_l, img_r):
@@ -33,7 +34,7 @@ def createPointCloud(rgb_img, depth):
    rgb = o3d.geometry.Image(rgb_img.astype('int8'))
    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
       rgb, depth,
-      depth_scale=1000
+      depth_scale=1, depth_trunc=31.0
    )
    pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
     rgbd,
@@ -102,18 +103,18 @@ def gaussFilter(img_l, img_r, k_size):
     return cv2.GaussianBlur(img_l,(k_size,k_size),0), cv2.GaussianBlur(img_r,(k_size,k_size),0)
 
 # %%
-min_disp = 70
-num_disp = 10 * 16
-block_size = 31
-stereo = cv2.StereoBM_create(numDisparities = num_disp, blockSize = block_size)
+min_disp = 80
+num_disp = 15 * 16
+block_size = 5
+stereo = cv2.StereoSGBM_create(numDisparities = num_disp, blockSize = block_size, P1 = 8*block_size**2, P2 = 32*block_size**2, preFilterCap = 2)
 stereo.setMinDisparity(min_disp)
-stereo.setDisp12MaxDiff(200)
-stereo.setUniquenessRatio(10)
-stereo.setSpeckleRange(3)
-stereo.setSpeckleWindowSize(3)
+stereo.setDisp12MaxDiff(230)
+stereo.setUniquenessRatio(15)
+stereo.setSpeckleRange(1)
+stereo.setSpeckleWindowSize(50)
 
 images_l = sorted(left.glob('*_Left.png'))
-for filename_left in images_l:
+for filename_left in images_l[80:]:
     filename_stem = PurePath(filename_left).stem
     filename_parts = filename_stem.split('_')
     file_number = filename_parts[0] + '_' + filename_parts[1]
@@ -128,7 +129,7 @@ for filename_left in images_l:
 
     gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
     gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
-    disp = stereo.compute(gray_l, gray_r).astype('float')
+    disp = stereo.compute(gray_l, gray_r).astype('float32') / 16.0
     
     #disp1 = stereo.compute(dst_l[:,:,0], dst_r[:,:,0]).astype('float')
     #disp2 = stereo.compute(dst_l[:,:,1], dst_r[:,:,1]).astype('float')
@@ -144,9 +145,8 @@ for filename_left in images_l:
     #o3d.visualization.draw_geometries([pcd])
 
     cv2.imshow('left' , dst_l)
-    #cv2.imshow('right', dst_r)
-    cv2.imshow('disp' , disp/4096.0)
-    
+    cv2.imshow('right', dst_r)
+    cv2.imshow('disp' , disp/256.0)
     #cv2.imshow('disp_m' , disp_m/np.max(disp_m))
     #cv2.imshow('disp1' , disp1/np.max(disp1))
     #cv2.imshow('disp2' , disp2/np.max(disp2))
@@ -160,16 +160,17 @@ cv2.destroyAllWindows()
 max_dist = 5e-8
 cluster_density = 2e-7
 cluster_minpoints = 3
+mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1, origin=[0, 0, 0])
 
-min_disp = 70
-num_disp = 20 * 16
-block_size = 31
-stereo = cv2.StereoBM_create(numDisparities = num_disp, blockSize = block_size)
+min_disp = 80
+num_disp = 15 * 16
+block_size = 5
+stereo = cv2.StereoSGBM_create(numDisparities = num_disp, blockSize = block_size, P1 = 8*block_size**2, P2 = 32*block_size**2, preFilterCap = 2)
 stereo.setMinDisparity(min_disp)
-stereo.setDisp12MaxDiff(10)
-stereo.setUniquenessRatio(25)
-stereo.setSpeckleRange(3)
-stereo.setSpeckleWindowSize(3)
+stereo.setDisp12MaxDiff(230)
+stereo.setUniquenessRatio(15)
+stereo.setSpeckleRange(1)
+stereo.setSpeckleWindowSize(50)
 
 # create point cloud of background
 static_cloud = o3d.geometry.PointCloud()
@@ -184,19 +185,19 @@ for filename_left in images_l[:30]:
     dst_l, dst_r = calibrateImages(img_l, img_r)
     gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
     gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
-    disp = stereo.compute(gray_l, gray_r).astype('float')
-    depth = 1/(disp)
-    depth[depth == np.max(depth)] = np.nan
-    static_cloud += createPointCloud(dst_l, depth)
-    print(len(static_cloud.points))
-o3d.visualization.draw_geometries([static_cloud])
-cl, ind = static_cloud.remove_radius_outlier(nb_points=10, radius=1.0e-9)
-print(len(ind))
+    disp = stereo.compute(gray_l, gray_r).astype('float32') / 16.0
+    depth = cv2.reprojectImageTo3D(disp, Q_mat)
+    static_cloud += createPointCloud(dst_l, depth[:,:,2])
+    print("static_cloud size:", len(static_cloud.points))
+
+o3d.visualization.draw_geometries([static_cloud, mesh_frame])
+cl, ind = static_cloud.remove_radius_outlier(nb_points=5, radius=1.0e-2)
+print("static_cloud size after removing noise:", len(ind))
 static_cloud = static_cloud.select_by_index(ind)
-o3d.visualization.draw_geometries([static_cloud])
-static_cloud = static_cloud.voxel_down_sample(1.0e-8)
-print(len(static_cloud.points))
-o3d.visualization.draw_geometries([static_cloud])
+o3d.visualization.draw_geometries([static_cloud, mesh_frame])
+static_cloud = static_cloud.voxel_down_sample(1.0e-1)
+print("static_cloud size after downsampling:", len(static_cloud.points))
+o3d.visualization.draw_geometries([static_cloud, mesh_frame])
 
 #%% prediction part
 import torch, torchvision
@@ -278,6 +279,13 @@ kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
 # %%
 backSub_l = cv2.createBackgroundSubtractorMOG2(varThreshold=32)
 backSub_r = cv2.createBackgroundSubtractorMOG2(varThreshold=32)
+sift = cv2.xfeatures2d.SIFT_create()
+# FLANN parameters
+FLANN_INDEX_KDTREE = 1
+index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+search_params = dict(checks=50)   # or pass empty dictionary
+flann = cv2.FlannBasedMatcher(index_params,search_params)
+
 margin_g = 40
 margin_d = 10
 h, w = 0, 0
@@ -299,7 +307,7 @@ file_number = filename_parts[0] + '_' + filename_parts[1]
 filename_right = right / (file_number + '_Right.png')
 image_prev_l, image_prev_r = calibrateImages(cv2.imread(str(images_l[0])), cv2.imread(str(filename_right)))
 
-for filename_left in images_l[2:]:
+for iteration, filename_left in enumerate(images_l[1:]):
     filename_stem = PurePath(filename_left).stem
     filename_parts = filename_stem.split('_')
     file_number = filename_parts[0] + '_' + filename_parts[1]
@@ -319,6 +327,9 @@ for filename_left in images_l[2:]:
     mask_l = np.zeros(fgMask_margin_l.shape, dtype=np.uint8)
     mask_r = np.zeros(fgMask_margin_r.shape, dtype=np.uint8)
 
+    mask_obj_l = np.zeros(fgMask_margin_l.shape, dtype=np.uint8)
+    mask_obj_r = np.zeros(fgMask_margin_r.shape, dtype=np.uint8)
+
     dst_l_copy = dst_l.copy()
     dst_r_copy = dst_r.copy()
 
@@ -327,7 +338,7 @@ for filename_left in images_l[2:]:
     xl1 = 0
     yl1 = 0
     predict_flag=False
-    if len(contours_l) > 0:
+    if len(contours_l) > 0 and iteration > 30:
         contours_area = np.array([cv2.contourArea(contour) for contour in contours_l])
         contour_max = contours_l[np.argmax(contours_area)]
         if cv2.contourArea(contour_max) > contour_thresh:
@@ -343,6 +354,7 @@ for filename_left in images_l[2:]:
             xg1 = max(0, x-margin_g)
             yg1 = max(0, y-margin_g)
             mask_l[yg1:yg2, xg1:xg2] = 1
+            mask_obj_l[yg1:yg2, xg1:xg2] = 1
 
             xl2 = min(mask_l.shape[1]-1, x+w+margin_d)
             yl2 = min(mask_l.shape[0]-1, y+h+margin_d)
@@ -351,7 +363,7 @@ for filename_left in images_l[2:]:
     #dst_l_copy = cv2.bitwise_and(dst_l_copy, dst_l_copy, mask=mask_l)
     
 
-    if len(contours_r) > 0:
+    if len(contours_r) > 0 and iteration > 30:
         contours_area = np.array([cv2.contourArea(contour) for contour in contours_r])
         contour_max = contours_r[np.argmax(contours_area)]
         if cv2.contourArea(contour_max) > contour_thresh:
@@ -362,12 +374,31 @@ for filename_left in images_l[2:]:
             xg1 = max(0, x-margin_g)
             yg1 = max(0, y-margin_g)
             mask_r[yg1:yg2, xg1:xg2] = 1
+            mask_obj_r[yg1:yg2, xg1:xg2] = 1
     
     gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
     gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
 
-    gray_l = cv2.bitwise_and(gray_l, gray_l, mask=mask_l)
-    gray_r = cv2.bitwise_and(gray_r, gray_r, mask=mask_r)
+    gray_l = cv2.bitwise_and(gray_l, gray_l, mask=mask_obj_l)
+    gray_r = cv2.bitwise_and(gray_r, gray_r, mask=mask_obj_r)
+
+    # kp_l, des_l = sift.detectAndCompute(gray_l, None)
+    # kp_r, des_r = sift.detectAndCompute(gray_r, None)
+
+    # if len(kp_l) > 0 and len(kp_r) > 0:
+    #     matches = flann.knnMatch(des_l,des_r,k=2)
+    #     # Need to draw only good matches, so create a mask
+    #     matchesMask = [[0,0] for i in range(len(matches))]
+    #     # ratio test as per Lowe's paper
+    #     for i,(m,n) in enumerate(matches):
+    #         if m.distance < 0.7*n.distance and np.abs(kp_l[m.queryIdx].pt[1] - kp_r[m.trainIdx].pt[1]) < 2:
+    #             matchesMask[i]=[1,0]
+    #     draw_params = dict(matchColor = (0,255,0),
+    #                     singlePointColor = (255,0,0),
+    #                     matchesMask = matchesMask,
+    #                     flags = cv2.DrawMatchesFlags_DEFAULT)
+    #     img3 = cv2.drawMatchesKnn(gray_l,kp_l,gray_r,kp_r,matches,None,**draw_params)
+    #     cv2.imshow('matches', img3)
 
     disp = stereo.compute(gray_l, gray_r).astype('float')
     disp_min = np.min(disp)
@@ -484,6 +515,7 @@ for filename_left in images_l[2:]:
         # cv2.imshow('left' , to_predict)
     kalman_center_point = projectPointToImage(kalman.statePost)
     cv2.circle(dst_l_copy, (int(kalman_center_point[0]), int(kalman_center_point[1])), 5, (0,0,255))
+    cv2.putText(dst_l_copy, 'frame: ' + str(iteration+1) ,(10,50), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.putText(dst_l_copy, str(kalman.statePost[0]) ,(10,100), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.putText(dst_l_copy, str(kalman.statePost[1]) ,(10,150), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.putText(dst_l_copy, str(kalman.statePost[2]) ,(10,200), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
@@ -494,10 +526,10 @@ for filename_left in images_l[2:]:
     cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
     #cv2.imshow('fgmask', fgMask_thresh_l)
-    cv2.imshow('fgmask', fgMask_margin_l)
+    #cv2.imshow('fgmask', fgMask_margin_l)
     #cv2.imshow('left_diff' , diff_blur_l)
     #cv2.imshow('right', dst_r)
-    # cv2.imshow('disp' , disp/8192.0)
+    cv2.imshow('disp' , disp/8192.0)
 
     key = cv2.waitKey(1)
     if key == 27:
