@@ -191,7 +191,7 @@ for filename_left in images_l[:30]:
     print("static_cloud size:", len(static_cloud.points))
 
 o3d.visualization.draw_geometries([static_cloud, mesh_frame])
-cl, ind = static_cloud.remove_radius_outlier(nb_points=5, radius=1.0e-2)
+cl, ind = static_cloud.remove_radius_outlier(nb_points=3, radius=1.0e-2)
 print("static_cloud size after removing noise:", len(ind))
 static_cloud = static_cloud.select_by_index(ind)
 o3d.visualization.draw_geometries([static_cloud, mesh_frame])
@@ -285,7 +285,7 @@ FLANN_INDEX_KDTREE = 1
 index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
 search_params = dict(checks=50)   # or pass empty dictionary
 flann = cv2.FlannBasedMatcher(index_params,search_params)
-
+static_cloud.paint_uniform_color([1, 0.706, 0])
 margin_g = 40
 margin_d = 10
 h, w = 0, 0
@@ -379,8 +379,8 @@ for iteration, filename_left in enumerate(images_l[1:]):
     gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
     gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
 
-    gray_l = cv2.bitwise_and(gray_l, gray_l, mask=mask_obj_l)
-    gray_r = cv2.bitwise_and(gray_r, gray_r, mask=mask_obj_r)
+    #gray_l = cv2.bitwise_and(gray_l, gray_l, mask=mask_obj_l)
+    #gray_r = cv2.bitwise_and(gray_r, gray_r, mask=mask_obj_r)
 
     # kp_l, des_l = sift.detectAndCompute(gray_l, None)
     # kp_r, des_r = sift.detectAndCompute(gray_r, None)
@@ -400,22 +400,27 @@ for iteration, filename_left in enumerate(images_l[1:]):
     #     img3 = cv2.drawMatchesKnn(gray_l,kp_l,gray_r,kp_r,matches,None,**draw_params)
     #     cv2.imshow('matches', img3)
 
-    disp = stereo.compute(gray_l, gray_r).astype('float')
-    disp_min = np.min(disp)
-    disp[:yl1,:] = disp_min
-    disp[yl2:,:] = disp_min
-    disp[yl1:yl2,:xl1] = disp_min
-    disp[yl1:yl2,xl2:] = disp_min
+    disp = stereo.compute(gray_l, gray_r).astype('float32') / 16.0
+    #disp_min = np.min(disp)
+    #disp[:yl1,:] = disp_min
+    #disp[yl2:,:] = disp_min
+    #disp[yl1:yl2,:xl1] = disp_min
+    #disp[yl1:yl2,xl2:] = disp_min
+    disp = cv2.bitwise_and(disp, disp, mask=mask_obj_l)
 
-    depth = 1/(disp)
-    depth[depth == np.max(depth)] = np.nan
+    depth = cv2.reprojectImageTo3D(disp, Q_mat)
 
     # Kalman update
     kalman.predict()
 
-    pcd = createPointCloud(dst_l, depth)
+    pcd = createPointCloud(dst_l, depth[:,:,2])
+    #if(len(pcd.points)) > 0:
+    #    o3d.visualization.draw_geometries([pcd, static_cloud, mesh_frame])
     distances = np.asarray(pcd.compute_point_cloud_distance(static_cloud))
-    pcd = pcd.select_by_index(np.where(distances > max_dist)[0])
+    pcd = pcd.select_by_index(np.where(distances > 1.0)[0])
+    #if(len(pcd.points)) > 0:
+    #    o3d.visualization.draw_geometries([pcd, static_cloud, mesh_frame])
+    
     #print('before:', len(pcd.points))
     #cl, ind = pcd.remove_radius_outlier(nb_points=30, radius=5.0e-9)
     #print('after:', len(pcd.points))
@@ -497,7 +502,7 @@ for iteration, filename_left in enumerate(images_l[1:]):
     if len(pcd.points)>200 and roi_x < 1230 and roi_y > 300 and roi_ratio > 0.6:
         #print(len(pcd.points))
         #o3d.visualization.draw_geometries([pcd])
-        pcd = pcd.voxel_down_sample(1.0e-8)
+        pcd = pcd.voxel_down_sample(1.0e-1)
         #print(len(pcd.points))
         #o3d.visualization.draw_geometries([pcd])
         center = getObjectCenter(pcd)
@@ -529,7 +534,7 @@ for iteration, filename_left in enumerate(images_l[1:]):
     #cv2.imshow('fgmask', fgMask_margin_l)
     #cv2.imshow('left_diff' , diff_blur_l)
     #cv2.imshow('right', dst_r)
-    cv2.imshow('disp' , disp/8192.0)
+    cv2.imshow('disp' , disp/256.0)
 
     key = cv2.waitKey(1)
     if key == 27:
