@@ -88,6 +88,12 @@ def projectImageToPoint(point):
     v = (point[1]-cy)/fy
     return np.asarray([u,v,1])
 
+def cleanFgMask(fg_mask):
+    _, fg_mask_thresh = cv2.threshold(fg_mask, 128, 255, cv2.THRESH_BINARY)
+    fg_mask_fill = cv2.dilate(fg_mask_thresh, cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(13,13)), iterations=3)
+    fg_mask_erode = cv2.erode(fg_mask_fill, cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(7,7)), iterations=10)
+    return cv2.dilate(fg_mask_erode, cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(13,13)), iterations=5)
+
 # %%
 def biFilter(img_l, img_r, k_size, sigma):
     return cv2.bilateralFilter(img_l,k_size,sigma,sigma), cv2.bilateralFilter(img_r,k_size,sigma,sigma)
@@ -270,6 +276,8 @@ kalman.statePost = np.zeros((6,1)).astype('float32')
 kalman.statePost[2] = 1e-9
 kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
 # %%
+backSub_l = cv2.createBackgroundSubtractorMOG2(varThreshold=32)
+backSub_r = cv2.createBackgroundSubtractorMOG2(varThreshold=32)
 margin_g = 40
 margin_d = 10
 h, w = 0, 0
@@ -283,19 +291,13 @@ trans_init = np.asarray([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
 point_to_point =  o3d.pipelines.registration.TransformationEstimationPointToPoint(False)
 point_to_plane =  o3d.pipelines.registration.TransformationEstimationPointToPlane()
 pcd_old = o3d.geometry.PointCloud()
+
 images_l = sorted(left.glob('*_Left.png'))
 filename_stem = PurePath(images_l[0]).stem
 filename_parts = filename_stem.split('_')
 file_number = filename_parts[0] + '_' + filename_parts[1]
 filename_right = right / (file_number + '_Right.png')
 image_prev_l, image_prev_r = calibrateImages(cv2.imread(str(images_l[0])), cv2.imread(str(filename_right)))
-image_prev_l, image_prev_r = gaussFilter(image_prev_l, image_prev_r, 7)
-filename_stem = PurePath(images_l[1]).stem
-filename_parts = filename_stem.split('_')
-file_number = filename_parts[0] + '_' + filename_parts[1]
-filename_right = right / (file_number + '_Right.png')
-image_prev2_l, image_prev2_r = calibrateImages(cv2.imread(str(images_l[1])), cv2.imread(str(filename_right)))
-image_prev2_l, image_prev2_r = gaussFilter(image_prev2_l, image_prev2_r, 7)
 
 for filename_left in images_l[2:]:
     filename_stem = PurePath(filename_left).stem
@@ -306,27 +308,19 @@ for filename_left in images_l[2:]:
     img_r = cv2.imread(str(filename_right))
 
     dst_l, dst_r = calibrateImages(img_l, img_r)
-    dst_l, dst_r = gaussFilter(dst_l, dst_r, 7)
+    fgMask_l = backSub_l.apply(dst_l)
+    fgMask_margin_l = cleanFgMask(fgMask_l)
+    fgMask_r = backSub_r.apply(dst_r)
+    fgMask_margin_r = cleanFgMask(fgMask_r)
 
-    diff_l = cv2.absdiff(image_prev_l, dst_l)
-    diff_r = cv2.absdiff(image_prev_r, dst_r)
+    _, contours_l, _ = cv2.findContours(fgMask_margin_l, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    _, contours_r, _ = cv2.findContours(fgMask_margin_r, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-    diff_gray_l = cv2.cvtColor(diff_l, cv2.COLOR_BGR2GRAY)
-    diff_gray_r = cv2.cvtColor(diff_r, cv2.COLOR_BGR2GRAY)
-
-    diff_blur_l, diff_blur_r = gaussFilter(diff_gray_l, diff_gray_r, 21)
+    mask_l = np.zeros(fgMask_margin_l.shape, dtype=np.uint8)
+    mask_r = np.zeros(fgMask_margin_r.shape, dtype=np.uint8)
 
     dst_l_copy = dst_l.copy()
-
-    _, thresh_l = cv2.threshold(diff_gray_l, 15, 255, cv2.THRESH_BINARY)
-    _, thresh_r = cv2.threshold(diff_gray_r, 15, 255, cv2.THRESH_BINARY)
-    dilate_l = cv2.dilate(thresh_l, None, iterations=3)
-    dilate_r = cv2.dilate(thresh_r, None, iterations=3)
-    _, contours_l, _ = cv2.findContours(dilate_l, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    _, contours_r, _ = cv2.findContours(dilate_r, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    mask_l = np.zeros(diff_gray_l.shape, dtype=np.uint8)
-    mask_r = np.zeros(diff_gray_r.shape, dtype=np.uint8)
+    dst_r_copy = dst_r.copy()
 
     xl2 = mask_l.shape[1]-1
     yl2 = mask_l.shape[0]-1
@@ -362,7 +356,7 @@ for filename_left in images_l[2:]:
         contour_max = contours_r[np.argmax(contours_area)]
         if cv2.contourArea(contour_max) > contour_thresh:
             (x, y, w, h) = cv2.boundingRect(contour_max)
-            
+            cv2.rectangle(dst_r_copy, (x, y), (x+w, y+h), (0, 255, 0), 1)
             xg2 = min(mask_r.shape[1]-1, x+w+margin_g)
             yg2 = min(mask_r.shape[0]-1, y+h+margin_g)
             xg1 = max(0, x-margin_g)
@@ -499,6 +493,8 @@ for filename_left in images_l[2:]:
 
     cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
+    #cv2.imshow('fgmask', fgMask_thresh_l)
+    cv2.imshow('fgmask', fgMask_margin_l)
     #cv2.imshow('left_diff' , diff_blur_l)
     #cv2.imshow('right', dst_r)
     # cv2.imshow('disp' , disp/8192.0)
@@ -506,9 +502,7 @@ for filename_left in images_l[2:]:
     key = cv2.waitKey(1)
     if key == 27:
         break
-    image_prev_l = image_prev2_l
-    image_prev_r = image_prev2_r
-    image_prev2_l = dst_l
-    image_prev2_r = dst_r
+    image_prev_l = dst_l
+    image_prev_r = dst_r
 cv2.destroyAllWindows()
 # %%
