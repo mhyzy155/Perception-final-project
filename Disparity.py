@@ -278,19 +278,11 @@ kalman.statePost[2] = 1e-9
 kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
 # %%
 backSub_l = cv2.createBackgroundSubtractorMOG2(varThreshold=32)
-backSub_r = cv2.createBackgroundSubtractorMOG2(varThreshold=32)
-sift = cv2.xfeatures2d.SIFT_create()
-# FLANN parameters
-FLANN_INDEX_KDTREE = 1
-index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
-search_params = dict(checks=50)   # or pass empty dictionary
-flann = cv2.FlannBasedMatcher(index_params,search_params)
+
 static_cloud.paint_uniform_color([1, 0.706, 0])
-margin_g = 40
-margin_d = 10
 h, w = 0, 0
 roi_counter = 0
-roi_area_max = 1
+pcd_len_max = 1
 roi_x = 0
 roi_y = 0
 contour_thresh = 500
@@ -316,225 +308,160 @@ for iteration, filename_left in enumerate(images_l[1:]):
     img_r = cv2.imread(str(filename_right))
 
     dst_l, dst_r = calibrateImages(img_l, img_r)
+
     fgMask_l = backSub_l.apply(dst_l)
-    fgMask_margin_l = cleanFgMask(fgMask_l)
-    fgMask_r = backSub_r.apply(dst_r)
-    fgMask_margin_r = cleanFgMask(fgMask_r)
-
-    _, contours_l, _ = cv2.findContours(fgMask_margin_l, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    _, contours_r, _ = cv2.findContours(fgMask_margin_r, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    mask_l = np.zeros(fgMask_margin_l.shape, dtype=np.uint8)
-    mask_r = np.zeros(fgMask_margin_r.shape, dtype=np.uint8)
-
-    mask_obj_l = np.zeros(fgMask_margin_l.shape, dtype=np.uint8)
-    mask_obj_r = np.zeros(fgMask_margin_r.shape, dtype=np.uint8)
+    fgMask_clean_l = cleanFgMask(fgMask_l)
+    _, contours_l, _ = cv2.findContours(fgMask_clean_l, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    mask_l = np.zeros(fgMask_clean_l.shape, dtype=np.uint8)
 
     dst_l_copy = dst_l.copy()
-    dst_r_copy = dst_r.copy()
 
-    xl2 = mask_l.shape[1]-1
-    yl2 = mask_l.shape[0]-1
-    xl1 = 0
-    yl1 = 0
+    # Kalman update
+    kalman.predict()
+
     predict_flag=False
     if len(contours_l) > 0 and iteration > 30:
         contours_area = np.array([cv2.contourArea(contour) for contour in contours_l])
         contour_max = contours_l[np.argmax(contours_area)]
         if cv2.contourArea(contour_max) > contour_thresh:
             (x, y, w, h) = cv2.boundingRect(contour_max)
+            cv2.rectangle(dst_l_copy, (x, y), (x+w, y+h), (0, 255, 0), 1)
+
             roi_x = int(x+w/2)
-            roi_y = int(y+h/2)            
+            roi_y = int(y+h/2)
+
             if w>0 and h>0:
                 to_predict=dst_l_copy[y:(y+h), x:(x+w)]
                 predict_flag=True
-            cv2.rectangle(dst_l_copy, (x, y), (x+w, y+h), (0, 255, 0), 1)
-            xg2 = min(mask_l.shape[1]-1, x+w+margin_g)
-            yg2 = min(mask_l.shape[0]-1, y+h+margin_g)
-            xg1 = max(0, x-margin_g)
-            yg1 = max(0, y-margin_g)
-            mask_l[yg1:yg2, xg1:xg2] = 1
-            mask_obj_l[yg1:yg2, xg1:xg2] = 1
-
-            xl2 = min(mask_l.shape[1]-1, x+w+margin_d)
-            yl2 = min(mask_l.shape[0]-1, y+h+margin_d)
-            xl1 = max(0, x-margin_d)
-            yl1 = max(0, y-margin_d)
-    #dst_l_copy = cv2.bitwise_and(dst_l_copy, dst_l_copy, mask=mask_l)
-    
-
-    if len(contours_r) > 0 and iteration > 30:
-        contours_area = np.array([cv2.contourArea(contour) for contour in contours_r])
-        contour_max = contours_r[np.argmax(contours_area)]
-        if cv2.contourArea(contour_max) > contour_thresh:
-            (x, y, w, h) = cv2.boundingRect(contour_max)
-            cv2.rectangle(dst_r_copy, (x, y), (x+w, y+h), (0, 255, 0), 1)
-            xg2 = min(mask_r.shape[1]-1, x+w+margin_g)
-            yg2 = min(mask_r.shape[0]-1, y+h+margin_g)
-            xg1 = max(0, x-margin_g)
-            yg1 = max(0, y-margin_g)
-            mask_r[yg1:yg2, xg1:xg2] = 1
-            mask_obj_r[yg1:yg2, xg1:xg2] = 1
-    
-    gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
-    gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
-
-    #gray_l = cv2.bitwise_and(gray_l, gray_l, mask=mask_obj_l)
-    #gray_r = cv2.bitwise_and(gray_r, gray_r, mask=mask_obj_r)
-
-    # kp_l, des_l = sift.detectAndCompute(gray_l, None)
-    # kp_r, des_r = sift.detectAndCompute(gray_r, None)
-
-    # if len(kp_l) > 0 and len(kp_r) > 0:
-    #     matches = flann.knnMatch(des_l,des_r,k=2)
-    #     # Need to draw only good matches, so create a mask
-    #     matchesMask = [[0,0] for i in range(len(matches))]
-    #     # ratio test as per Lowe's paper
-    #     for i,(m,n) in enumerate(matches):
-    #         if m.distance < 0.7*n.distance and np.abs(kp_l[m.queryIdx].pt[1] - kp_r[m.trainIdx].pt[1]) < 2:
-    #             matchesMask[i]=[1,0]
-    #     draw_params = dict(matchColor = (0,255,0),
-    #                     singlePointColor = (255,0,0),
-    #                     matchesMask = matchesMask,
-    #                     flags = cv2.DrawMatchesFlags_DEFAULT)
-    #     img3 = cv2.drawMatchesKnn(gray_l,kp_l,gray_r,kp_r,matches,None,**draw_params)
-    #     cv2.imshow('matches', img3)
-
-    disp = stereo.compute(gray_l, gray_r).astype('float32') / 16.0
-    #disp_min = np.min(disp)
-    #disp[:yl1,:] = disp_min
-    #disp[yl2:,:] = disp_min
-    #disp[yl1:yl2,:xl1] = disp_min
-    #disp[yl1:yl2,xl2:] = disp_min
-    disp = cv2.bitwise_and(disp, disp, mask=mask_obj_l)
-
-    depth = cv2.reprojectImageTo3D(disp, Q_mat)
-
-    # Kalman update
-    kalman.predict()
-
-    pcd = createPointCloud(dst_l, depth[:,:,2])
-    #if(len(pcd.points)) > 0:
-    #    o3d.visualization.draw_geometries([pcd, static_cloud, mesh_frame])
-    distances = np.asarray(pcd.compute_point_cloud_distance(static_cloud))
-    pcd = pcd.select_by_index(np.where(distances > 1.0)[0])
-    #if(len(pcd.points)) > 0:
-    #    o3d.visualization.draw_geometries([pcd, static_cloud, mesh_frame])
-    
-    #print('before:', len(pcd.points))
-    #cl, ind = pcd.remove_radius_outlier(nb_points=30, radius=5.0e-9)
-    #print('after:', len(pcd.points))
-    #pcd = pcd.select_by_index(ind)
-    
-    # voxel_size = 1.0e-9
-    # if len(pcd.points) > 1500:
-    #     cl, ind = pcd.remove_radius_outlier(nb_points=30, radius=5.0e-9)
-    #     pcd = pcd.select_by_index(ind)
-    #     if len(pcd_old.points) > 0:
-    #         pcd_old.paint_uniform_color([0, 0.651, 0.929])
-    #         pcd.paint_uniform_color([1, 0.706, 0])
-    #         o3d.visualization.draw_geometries([pcd_old, pcd])
-
-    #         #pcd_old.estimate_normals()
-    #         #pcd.estimate_normals()
-    #         pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100), fast_normal_computation=True)
-    #         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100), fast_normal_computation=True)
-    #         source_features = o3d.pipelines.registration.compute_fpfh_feature(pcd_old, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100))
-    #         target_features = o3d.pipelines.registration.compute_fpfh_feature(pcd, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100))
             
-    #         ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-    #             pcd_old, pcd, 
-    #             source_features, target_features, True, 
-    #             voxel_size * 10,
-    #             point_to_point, criteria = o3d.pipelines.registration.RANSACConvergenceCriteria(1000000, 500))
-    #         pcd_old.transform(ransac_result.transformation)
-    #         o3d.visualization.draw_geometries([pcd_old, pcd])
+            x2 = min(mask_l.shape[1]-1, x+w)
+            y2 = min(mask_l.shape[0]-1, y+h)
+            x1 = max(0, x)
+            y1 = max(0, y)
+            mask_l[y1:y2, x1:x2] = 1
+    
+        gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
+        gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
 
-    #         print("Initial alignment")
-    #         evaluation = o3d.pipelines.registration.evaluate_registration(pcd_old, pcd, threshold, trans_init)
-    #         print(evaluation)
+        disp = stereo.compute(gray_l, gray_r).astype('float32') / 16.0
+        disp = cv2.bitwise_and(disp, disp, mask=mask_l)
+        cv2.imshow('disp' , disp/256.0)
 
-    #         pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=30), fast_normal_computation=True)
-    #         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=30), fast_normal_computation=True)
-    #         icp_result = o3d.pipelines.registration.registration_icp(
-    #             pcd_old, pcd, threshold*10, trans_init,
-    #             point_to_plane, o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=5000))
-    #         #pcd_old.transform(icp_result.transformation)
-    #         #o3d.visualization.draw_geometries([pcd_old, pcd])
-    #     pcd_old += pcd
-    #     pcd_old.paint_uniform_color([0, 0.651, 0.929])
-    #     print('before:', len(pcd_old.points))
-    #     cl, ind = pcd_old.remove_radius_outlier(nb_points=15, radius=1.0e-8)
-    #     print('left:', len(ind))
-    #     pcd_old = pcd_old.select_by_index(ind)
-    #     #o3d.visualization.draw_geometries([pcd_old])
-    #     pcd_old = pcd_old.voxel_down_sample(2.0e-9)
-    #     print('after downsampling:', len(pcd_old.points))
-    #     #o3d.visualization.draw_geometries([pcd_old])
+        depth = cv2.reprojectImageTo3D(disp, Q_mat)
+        pcd = createPointCloud(dst_l, depth[:,:,2])
+        distances = np.asarray(pcd.compute_point_cloud_distance(static_cloud))
+        pcd = pcd.select_by_index(np.where(distances > 1.0)[0])
+        #if(len(pcd.points)) > 0:
+        #    o3d.visualization.draw_geometries([pcd, static_cloud, mesh_frame])
+        
+        #print('pcd w/  noise:', len(pcd.points))
+        cl, ind = pcd.remove_radius_outlier(nb_points=200, radius=1.0)
+        pcd = pcd.select_by_index(ind)
+        #print('pcd w/o noise:', len(pcd.points))
+        #if(len(pcd.points)) > 0:
+        #    o3d.visualization.draw_geometries([pcd, mesh_frame])
+        pcd_len = len(pcd.points)
+        
+        # voxel_size = 1.0e-9
+        # if len(pcd.points) > 1500:
+        #     cl, ind = pcd.remove_radius_outlier(nb_points=30, radius=5.0e-9)
+        #     pcd = pcd.select_by_index(ind)
+        #     if len(pcd_old.points) > 0:
+        #         pcd_old.paint_uniform_color([0, 0.651, 0.929])
+        #         pcd.paint_uniform_color([1, 0.706, 0])
+        #         o3d.visualization.draw_geometries([pcd_old, pcd])
 
-    #labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
-    #if len(labels) > 0:
-    #    print(labels, np.max(labels)+1)
-    #    if np.max(labels) > -1:
-    #        pcd = pcd.select_by_index(np.where(labels == 0)[0])
-    #        center = getObjectCenter(pcd)
-    #    
-    #        image_center_point = projectPointToImage(center)
-    #        print(center, image_center_point)
-    #        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
-        #draw_labels_on_model(pcd, labels)
-    # print("Number of points in pointcloud: ", len(pcd_old.points))
+        #         #pcd_old.estimate_normals()
+        #         #pcd.estimate_normals()
+        #         pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100), fast_normal_computation=True)
+        #         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100), fast_normal_computation=True)
+        #         source_features = o3d.pipelines.registration.compute_fpfh_feature(pcd_old, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100))
+        #         target_features = o3d.pipelines.registration.compute_fpfh_feature(pcd, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100))
+                
+        #         ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+        #             pcd_old, pcd, 
+        #             source_features, target_features, True, 
+        #             voxel_size * 10,
+        #             point_to_point, criteria = o3d.pipelines.registration.RANSACConvergenceCriteria(1000000, 500))
+        #         pcd_old.transform(ransac_result.transformation)
+        #         o3d.visualization.draw_geometries([pcd_old, pcd])
 
-    if len(pcd.points)>200 and roi_x < 1230 and roi_y > 300:
-        roi_area = w*h
-        print('Roi area:',roi_area)
-        roi_area_max = max(roi_area_max, roi_area)
-        roi_ratio = roi_area/roi_area_max
-        print('RoiRatio:',roi_ratio)
+        #         print("Initial alignment")
+        #         evaluation = o3d.pipelines.registration.evaluate_registration(pcd_old, pcd, threshold, trans_init)
+        #         print(evaluation)
 
-    if roi_x < 420 and roi_y > 560:
-        roi_area_max = 1
-        kalman.statePost = np.zeros((6,1)).astype('float32')
-        kalman.statePost[2] = 1e-9
-        kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
+        #         pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=30), fast_normal_computation=True)
+        #         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=30), fast_normal_computation=True)
+        #         icp_result = o3d.pipelines.registration.registration_icp(
+        #             pcd_old, pcd, threshold*10, trans_init,
+        #             point_to_plane, o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=5000))
+        #         #pcd_old.transform(icp_result.transformation)
+        #         #o3d.visualization.draw_geometries([pcd_old, pcd])
+        #     pcd_old += pcd
+        #     pcd_old.paint_uniform_color([0, 0.651, 0.929])
+        #     print('before:', len(pcd_old.points))
+        #     cl, ind = pcd_old.remove_radius_outlier(nb_points=15, radius=1.0e-8)
+        #     print('left:', len(ind))
+        #     pcd_old = pcd_old.select_by_index(ind)
+        #     #o3d.visualization.draw_geometries([pcd_old])
+        #     pcd_old = pcd_old.voxel_down_sample(2.0e-9)
+        #     print('after downsampling:', len(pcd_old.points))
+        #     #o3d.visualization.draw_geometries([pcd_old])
 
+        #labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
+        #if len(labels) > 0:
+        #    print(labels, np.max(labels)+1)
+        #    if np.max(labels) > -1:
+        #        pcd = pcd.select_by_index(np.where(labels == 0)[0])
+        #        center = getObjectCenter(pcd)
+        #    
+        #        image_center_point = projectPointToImage(center)
+        #        print(center, image_center_point)
+        #        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
+            #draw_labels_on_model(pcd, labels)
+        # print("Number of points in pointcloud: ", len(pcd_old.points))
 
-    if len(pcd.points)>200 and roi_x < 1230 and roi_y > 300 and roi_ratio > 0.6:
-        #print(len(pcd.points))
-        #o3d.visualization.draw_geometries([pcd])
-        pcd = pcd.voxel_down_sample(1.0e-1)
-        #print(len(pcd.points))
-        #o3d.visualization.draw_geometries([pcd])
-        center = getObjectCenter(pcd)
-        M = projectImageToPoint([roi_x, roi_y])
-        center = np.dot(M, center)/np.dot(M,M) * M
-        #Kalman update
-        kalman.correct(np.reshape(center, (3,1)).astype('float32'))
-        image_center_point = projectPointToImage(center)
-        # print(center, image_center_point)
-        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
+        if pcd_len > 200 and roi_x < 1230 and roi_y > 300:
+            pcd_len_max = max(pcd_len_max, pcd_len)
+            pcd_ratio = pcd_len/pcd_len_max
+            print('pcd len: ', pcd_len)
+            print('pcdRatio:', pcd_ratio)
+
+        if pcd_len > 200 and roi_x < 1230 and roi_y > 300 and pcd_ratio > 0.6:
+            pcd = pcd.voxel_down_sample(1.0e-1)
+            center = getObjectCenter(pcd)
+            M = projectImageToPoint([roi_x, roi_y])
+            center = np.dot(M, center)/np.dot(M,M) * M
+
+            #Kalman update
+            kalman.correct(np.reshape(center, (3,1)).astype('float32'))
+            image_center_point = projectPointToImage(center)
+            cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 3, (0, 255, 0))
+
+        if roi_x < 430:
+            pcd_len_max = 1
+            kalman.statePost = np.zeros((6,1)).astype('float32')
+            kalman.statePost[2] = 1e-9
+            kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
+
     out=""
     if predict_flag:        
         pred = prediction(trained_model, to_predict)
-        out = classes[np.argmax(pred[0:3])] + str(np.max(pred[0:3]))
+        out = "{0}, confidence: {1:4.2f}".format(classes[np.argmax(pred[0:3])], np.max(pred[0:3]))
         # cv2.imshow('left' , to_predict)
+    
     kalman_center_point = projectPointToImage(kalman.statePost)
     cv2.circle(dst_l_copy, (int(kalman_center_point[0]), int(kalman_center_point[1])), 5, (0,0,255))
-    cv2.putText(dst_l_copy, 'frame: ' + str(iteration+1) ,(10,50), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, str(kalman.statePost[0]) ,(10,100), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, str(kalman.statePost[1]) ,(10,150), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, str(kalman.statePost[2]) ,(10,200), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, str(kalman.statePost[3]) ,(10,250), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, str(kalman.statePost[4]) ,(10,300), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, str(kalman.statePost[5]) ,(10,350), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
 
+    cv2.putText(dst_l_copy, 'frame: ' + str(iteration+1) ,(10,50), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "x:     {0:4.2f}".format(kalman.statePost[0][0]), (10,100), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "y:     {0:4.2f}".format(kalman.statePost[1][0]), (10,150), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "z:     {0:4.2f}".format(kalman.statePost[2][0]), (10,200), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "x vel: {0:4.2f}".format(kalman.statePost[3][0]), (10,250), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "y vel: {0:4.2f}".format(kalman.statePost[4][0]), (10,300), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "z vel: {0:4.2f}".format(kalman.statePost[5][0]), (10,350), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
-    #cv2.imshow('fgmask', fgMask_thresh_l)
-    #cv2.imshow('fgmask', fgMask_margin_l)
-    #cv2.imshow('left_diff' , diff_blur_l)
-    #cv2.imshow('right', dst_r)
-    cv2.imshow('disp' , disp/256.0)
 
     key = cv2.waitKey(1)
     if key == 27:
