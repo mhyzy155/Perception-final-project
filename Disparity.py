@@ -103,63 +103,6 @@ def gaussFilter(img_l, img_r, k_size):
     return cv2.GaussianBlur(img_l,(k_size,k_size),0), cv2.GaussianBlur(img_r,(k_size,k_size),0)
 
 # %%
-min_disp = 80
-num_disp = 15 * 16
-block_size = 5
-stereo = cv2.StereoSGBM_create(numDisparities = num_disp, blockSize = block_size, P1 = 8*block_size**2, P2 = 32*block_size**2, preFilterCap = 2)
-stereo.setMinDisparity(min_disp)
-stereo.setDisp12MaxDiff(230)
-stereo.setUniquenessRatio(15)
-stereo.setSpeckleRange(1)
-stereo.setSpeckleWindowSize(50)
-
-images_l = sorted(left.glob('*_Left.png'))
-for filename_left in images_l[80:]:
-    filename_stem = PurePath(filename_left).stem
-    filename_parts = filename_stem.split('_')
-    file_number = filename_parts[0] + '_' + filename_parts[1]
-    filename_right = right / (file_number + '_Right.png')
-    img_l = cv2.imread(str(filename_left))
-    img_r = cv2.imread(str(filename_right))
-
-    dst_l, dst_r = calibrateImages(img_l, img_r)
-    
-    #dst_l, dst_r = biFilter(dst_l, dst_r, 17, 35)
-    #dst_l, dst_r = gaussFilter(dst_l, dst_r, 17)
-
-    gray_l = cv2.cvtColor(dst_l, cv2.COLOR_BGR2GRAY)
-    gray_r = cv2.cvtColor(dst_r, cv2.COLOR_BGR2GRAY)
-    disp = stereo.compute(gray_l, gray_r).astype('float32') / 16.0
-    
-    #disp1 = stereo.compute(dst_l[:,:,0], dst_r[:,:,0]).astype('float')
-    #disp2 = stereo.compute(dst_l[:,:,1], dst_r[:,:,1]).astype('float')
-    #disp3 = stereo.compute(dst_l[:,:,2], dst_r[:,:,2]).astype('float')
-    #disp_m = cv2.merge((disp1/np.max(disp1), disp2/np.max(disp2), disp3/np.max(disp3)))
-    #disp_m = np.median([disp1, disp2, disp3], axis=0)
-        
-    #ratio = 20
-    #disp = (cv2.medianBlur((disp/ratio).astype('uint8'), 11).astype('float32'))*ratio
-
-    #depth = 1/(disp)*100+50
-    #pcd = createPointCloud(dst_l, depth)
-    #o3d.visualization.draw_geometries([pcd])
-
-    cv2.imshow('left' , dst_l)
-    cv2.imshow('right', dst_r)
-    cv2.imshow('disp' , disp/256.0)
-    #cv2.imshow('disp_m' , disp_m/np.max(disp_m))
-    #cv2.imshow('disp1' , disp1/np.max(disp1))
-    #cv2.imshow('disp2' , disp2/np.max(disp2))
-    #cv2.imshow('disp3' , disp3/np.max(disp3))
-    key = cv2.waitKey(1)
-    if key == 27:
-        break
-cv2.destroyAllWindows()
-
-# %%
-max_dist = 5e-8
-cluster_density = 2e-7
-cluster_minpoints = 3
 mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1, origin=[0, 0, 0])
 
 min_disp = 80
@@ -172,7 +115,7 @@ stereo.setUniquenessRatio(15)
 stereo.setSpeckleRange(1)
 stereo.setSpeckleWindowSize(50)
 
-# create point cloud of background
+# create a point cloud of the background
 static_cloud = o3d.geometry.PointCloud()
 images_l = sorted(left.glob('*_Left.png'))
 for filename_left in images_l[:30]:
@@ -190,14 +133,14 @@ for filename_left in images_l[:30]:
     static_cloud += createPointCloud(dst_l, depth[:,:,2])
     print("static_cloud size:", len(static_cloud.points))
 
-o3d.visualization.draw_geometries([static_cloud, mesh_frame])
+#o3d.visualization.draw_geometries([static_cloud, mesh_frame])
 cl, ind = static_cloud.remove_radius_outlier(nb_points=3, radius=1.0e-2)
 print("static_cloud size after removing noise:", len(ind))
 static_cloud = static_cloud.select_by_index(ind)
-o3d.visualization.draw_geometries([static_cloud, mesh_frame])
+#o3d.visualization.draw_geometries([static_cloud, mesh_frame])
 static_cloud = static_cloud.voxel_down_sample(1.0e-1)
 print("static_cloud size after downsampling:", len(static_cloud.points))
-o3d.visualization.draw_geometries([static_cloud, mesh_frame])
+#o3d.visualization.draw_geometries([static_cloud, mesh_frame])
 
 #%% prediction part
 import torch, torchvision
@@ -251,10 +194,10 @@ def prediction(model, image):
   return pred.detach().cpu().numpy().flatten()
 
 # %%
-dt = 1/120
+dt = 1/30
 initCovariance = 10000
 updateNoise = 0.001
-measurementNoise = 10
+measurementNoise = 1
 vel_fac = 0.1
 
 kalman = cv2.KalmanFilter(6, 3, 0)
@@ -298,6 +241,9 @@ filename_parts = filename_stem.split('_')
 file_number = filename_parts[0] + '_' + filename_parts[1]
 filename_right = right / (file_number + '_Right.png')
 image_prev_l, image_prev_r = calibrateImages(cv2.imread(str(images_l[0])), cv2.imread(str(filename_right)))
+
+fourcc = cv2.VideoWriter_fourcc(*'XVID')
+video_out = cv2.VideoWriter('result.avi',fourcc, 30.0, image_prev_l.shape[1::-1])
 
 for iteration, filename_left in enumerate(images_l[1:]):
     filename_stem = PurePath(filename_left).stem
@@ -358,68 +304,10 @@ for iteration, filename_left in enumerate(images_l[1:]):
         cl, ind = pcd.remove_radius_outlier(nb_points=200, radius=1.0)
         pcd = pcd.select_by_index(ind)
         #print('pcd w/o noise:', len(pcd.points))
+        bb = o3d.geometry.AxisAlignedBoundingBox().create_from_points(pcd.points)
         #if(len(pcd.points)) > 0:
-        #    o3d.visualization.draw_geometries([pcd, mesh_frame])
+        #    o3d.visualization.draw_geometries([pcd, bb, mesh_frame])
         pcd_len = len(pcd.points)
-        
-        # voxel_size = 1.0e-9
-        # if len(pcd.points) > 1500:
-        #     cl, ind = pcd.remove_radius_outlier(nb_points=30, radius=5.0e-9)
-        #     pcd = pcd.select_by_index(ind)
-        #     if len(pcd_old.points) > 0:
-        #         pcd_old.paint_uniform_color([0, 0.651, 0.929])
-        #         pcd.paint_uniform_color([1, 0.706, 0])
-        #         o3d.visualization.draw_geometries([pcd_old, pcd])
-
-        #         #pcd_old.estimate_normals()
-        #         #pcd.estimate_normals()
-        #         pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100), fast_normal_computation=True)
-        #         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100), fast_normal_computation=True)
-        #         source_features = o3d.pipelines.registration.compute_fpfh_feature(pcd_old, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100))
-        #         target_features = o3d.pipelines.registration.compute_fpfh_feature(pcd, o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=100))
-                
-        #         ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-        #             pcd_old, pcd, 
-        #             source_features, target_features, True, 
-        #             voxel_size * 10,
-        #             point_to_point, criteria = o3d.pipelines.registration.RANSACConvergenceCriteria(1000000, 500))
-        #         pcd_old.transform(ransac_result.transformation)
-        #         o3d.visualization.draw_geometries([pcd_old, pcd])
-
-        #         print("Initial alignment")
-        #         evaluation = o3d.pipelines.registration.evaluate_registration(pcd_old, pcd, threshold, trans_init)
-        #         print(evaluation)
-
-        #         pcd_old.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=30), fast_normal_computation=True)
-        #         pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size*5, max_nn=30), fast_normal_computation=True)
-        #         icp_result = o3d.pipelines.registration.registration_icp(
-        #             pcd_old, pcd, threshold*10, trans_init,
-        #             point_to_plane, o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=5000))
-        #         #pcd_old.transform(icp_result.transformation)
-        #         #o3d.visualization.draw_geometries([pcd_old, pcd])
-        #     pcd_old += pcd
-        #     pcd_old.paint_uniform_color([0, 0.651, 0.929])
-        #     print('before:', len(pcd_old.points))
-        #     cl, ind = pcd_old.remove_radius_outlier(nb_points=15, radius=1.0e-8)
-        #     print('left:', len(ind))
-        #     pcd_old = pcd_old.select_by_index(ind)
-        #     #o3d.visualization.draw_geometries([pcd_old])
-        #     pcd_old = pcd_old.voxel_down_sample(2.0e-9)
-        #     print('after downsampling:', len(pcd_old.points))
-        #     #o3d.visualization.draw_geometries([pcd_old])
-
-        #labels = np.asarray(pcd.cluster_dbscan(eps=cluster_density, min_points=cluster_minpoints))
-        #if len(labels) > 0:
-        #    print(labels, np.max(labels)+1)
-        #    if np.max(labels) > -1:
-        #        pcd = pcd.select_by_index(np.where(labels == 0)[0])
-        #        center = getObjectCenter(pcd)
-        #    
-        #        image_center_point = projectPointToImage(center)
-        #        print(center, image_center_point)
-        #        cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (255, 0, 0))
-            #draw_labels_on_model(pcd, labels)
-        # print("Number of points in pointcloud: ", len(pcd_old.points))
 
         if pcd_len > 200 and roi_x < 1230 and roi_y > 300:
             pcd_len_max = max(pcd_len_max, pcd_len)
@@ -434,6 +322,7 @@ for iteration, filename_left in enumerate(images_l[1:]):
             center = np.dot(M, center)/np.dot(M,M) * M
 
             #Kalman update
+            kalman.measurementNoiseCov = measurementNoise*np.eye(3).astype('float32') / pcd_ratio**2
             kalman.correct(np.reshape(center, (3,1)).astype('float32'))
             image_center_point = projectPointToImage(center)
             cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 3, (0, 255, 0))
@@ -462,11 +351,13 @@ for iteration, filename_left in enumerate(images_l[1:]):
     cv2.putText(dst_l_copy, "z vel: {0:4.2f}".format(kalman.statePost[5][0]), (10,350), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
+    video_out.write(dst_l_copy)
 
     key = cv2.waitKey(1)
     if key == 27:
         break
     image_prev_l = dst_l
     image_prev_r = dst_r
+video_out.release()
 cv2.destroyAllWindows()
 # %%
