@@ -137,3 +137,6 @@ dmypy.json
 *.zip
 Calibration.ipynb
 Disparity.ipynb
+/Models
+/debug
+*.avi

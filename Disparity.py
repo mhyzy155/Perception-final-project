@@ -95,6 +95,15 @@ def cleanFgMask(fg_mask):
     fg_mask_erode = cv2.erode(fg_mask_fill, cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(7,7)), iterations=10)
     return cv2.dilate(fg_mask_erode, cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(13,13)), iterations=5)
 
+def getJacobian(u,v,d,camMatrix,scale):
+    fx = camMatrix[0][0]
+    fy = camMatrix[1][1]
+    cx = camMatrix[0][2]
+    cy = camMatrix[1][2]
+    return np.array([
+        [d/fx/scale, 0, (u-cx)/fx/scale],
+        [0, d/fy/scale, (v-cy)/fy/scale],
+        [0, 0, 1/scale]]).astype('float32')
 # %%
 def biFilter(img_l, img_r, k_size, sigma):
     return cv2.bilateralFilter(img_l,k_size,sigma,sigma), cv2.bilateralFilter(img_r,k_size,sigma,sigma)
@@ -197,8 +206,11 @@ def prediction(model, image):
 dt = 1/30
 initCovariance = 10000
 updateNoise = 0.001
-measurementNoise = 1
+measurementNoise = 0.5
 vel_fac = 0.1
+depth_fac = 0.1
+
+kalmanImageCov = measurementNoise*np.diag([1, 1, depth_fac]).astype('float32')
 
 kalman = cv2.KalmanFilter(6, 3, 0)
 kalman.transitionMatrix = np.array([
@@ -215,7 +227,8 @@ kalman.measurementMatrix = np.array([
    [0, 0, 1, 0, 0, 0]
 ]).astype('float32')
 kalman.processNoiseCov = updateNoise*np.diag([1, 1, 1, vel_fac, vel_fac, vel_fac]).astype('float32')
-kalman.measurementNoiseCov = measurementNoise*np.eye(3).astype('float32')
+#kalman.processNoiseCov = updateNoise*np.eye(6).astype('float32')
+#kalman.measurementNoiseCov = measurementNoise*np.eye(3).astype('float32')
 kalman.statePost = np.zeros((6,1)).astype('float32')
 kalman.statePost[2] = 1e-9
 kalman.errorCovPost = initCovariance * np.eye(6).astype('float32')
@@ -322,7 +335,12 @@ for iteration, filename_left in enumerate(images_l[1:]):
             center = np.dot(M, center)/np.dot(M,M) * M
 
             #Kalman update
-            kalman.measurementNoiseCov = measurementNoise*np.eye(3).astype('float32') / pcd_ratio**2
+            measure_image_center = projectPointToImage(center)
+            jacobian = getJacobian(measure_image_center[0], measure_image_center[1], center[2], new_cam_l, 1)
+            print(center)
+            print(jacobian)
+            kalman.measurementNoiseCov = jacobian@kalmanImageCov@np.transpose(jacobian)
+            print(kalman.measurementNoiseCov)
             kalman.correct(np.reshape(center, (3,1)).astype('float32'))
             image_center_point = projectPointToImage(center)
             cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 3, (0, 255, 0))
