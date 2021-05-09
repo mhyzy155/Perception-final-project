@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import open3d as o3d
 
 # %%
-base_path = Path("./with_occlusions")
+base_path = Path("./without_occlusions")
 left = base_path / 'left' 
 right = base_path / 'right'
 
@@ -34,7 +34,7 @@ def createPointCloud(rgb_img, depth):
    rgb = o3d.geometry.Image(rgb_img.astype('int8'))
    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
       rgb, depth,
-      depth_scale=1, depth_trunc=31.0
+      depth_scale=1, depth_trunc=1040.0
    )
    pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
     rgbd,
@@ -112,7 +112,7 @@ def gaussFilter(img_l, img_r, k_size):
     return cv2.GaussianBlur(img_l,(k_size,k_size),0), cv2.GaussianBlur(img_r,(k_size,k_size),0)
 
 # %%
-mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1, origin=[0, 0, 0])
+mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=100, origin=[0, 0, 0])
 
 min_disp = 80
 num_disp = 15 * 16
@@ -143,11 +143,11 @@ for filename_left in images_l[:30]:
     print("static_cloud size:", len(static_cloud.points))
 
 #o3d.visualization.draw_geometries([static_cloud, mesh_frame])
-cl, ind = static_cloud.remove_radius_outlier(nb_points=3, radius=1.0e-2)
+cl, ind = static_cloud.remove_radius_outlier(nb_points=3, radius=0.3)
 print("static_cloud size after removing noise:", len(ind))
 static_cloud = static_cloud.select_by_index(ind)
 #o3d.visualization.draw_geometries([static_cloud, mesh_frame])
-static_cloud = static_cloud.voxel_down_sample(1.0e-1)
+static_cloud = static_cloud.voxel_down_sample(1.0)
 print("static_cloud size after downsampling:", len(static_cloud.points))
 #o3d.visualization.draw_geometries([static_cloud, mesh_frame])
 
@@ -309,17 +309,17 @@ for iteration, filename_left in enumerate(images_l[1:]):
         depth = cv2.reprojectImageTo3D(disp, Q_mat)
         pcd = createPointCloud(dst_l, depth[:,:,2])
         distances = np.asarray(pcd.compute_point_cloud_distance(static_cloud))
-        pcd = pcd.select_by_index(np.where(distances > 1.0)[0])
+        pcd = pcd.select_by_index(np.where(distances > 30.0)[0])
         #if(len(pcd.points)) > 0:
         #    o3d.visualization.draw_geometries([pcd, static_cloud, mesh_frame])
         
         #print('pcd w/  noise:', len(pcd.points))
-        cl, ind = pcd.remove_radius_outlier(nb_points=200, radius=1.0)
+        cl, ind = pcd.remove_radius_outlier(nb_points=200, radius=30.0)
         pcd = pcd.select_by_index(ind)
         #print('pcd w/o noise:', len(pcd.points))
-        bb = o3d.geometry.AxisAlignedBoundingBox().create_from_points(pcd.points)
+        #bb = o3d.geometry.AxisAlignedBoundingBox().create_from_points(pcd.points)
         #if(len(pcd.points)) > 0:
-        #    o3d.visualization.draw_geometries([pcd, bb, mesh_frame])
+        #    o3d.visualization.draw_geometries([pcd, static_cloud, bb, mesh_frame])
         pcd_len = len(pcd.points)
 
         if pcd_len > 200 and roi_x < 1230 and roi_y > 300:
@@ -343,7 +343,7 @@ for iteration, filename_left in enumerate(images_l[1:]):
             print(kalman.measurementNoiseCov)
             kalman.correct(np.reshape(center, (3,1)).astype('float32'))
             image_center_point = projectPointToImage(center)
-            cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 3, (0, 255, 0))
+            cv2.circle(dst_l_copy, (int(image_center_point[0]), int(image_center_point[1])), 5, (0, 255, 0), 2)
 
         if roi_x < 430:
             pcd_len_max = 1
@@ -358,15 +358,17 @@ for iteration, filename_left in enumerate(images_l[1:]):
         # cv2.imshow('left' , to_predict)
     
     kalman_center_point = projectPointToImage(kalman.statePost)
-    cv2.circle(dst_l_copy, (int(kalman_center_point[0]), int(kalman_center_point[1])), 5, (0,0,255))
+    cv2.circle(dst_l_copy, (int(kalman_center_point[0]), int(kalman_center_point[1])), 9, (0,0,255), 2)
 
+    abs_vel = np.sqrt(kalman.statePost[3][0]**2+kalman.statePost[4][0]**2+kalman.statePost[5][0]**2)
     cv2.putText(dst_l_copy, 'frame: ' + str(iteration+1) ,(10,50), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, "x:     {0:4.2f}".format(kalman.statePost[0][0]), (10,100), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, "y:     {0:4.2f}".format(kalman.statePost[1][0]), (10,150), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, "z:     {0:4.2f}".format(kalman.statePost[2][0]), (10,200), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, "x vel: {0:4.2f}".format(kalman.statePost[3][0]), (10,250), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, "y vel: {0:4.2f}".format(kalman.statePost[4][0]), (10,300), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
-    cv2.putText(dst_l_copy, "z vel: {0:4.2f}".format(kalman.statePost[5][0]), (10,350), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "x:       {0:4.2f} m".format(kalman.statePost[0][0]/1000), (10,100), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "y:       {0:4.2f} m".format(kalman.statePost[1][0]/1000), (10,150), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "z:       {0:4.2f} m".format(kalman.statePost[2][0]/1000), (10,200), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "x vel:   {0:4.2f} m/s".format(kalman.statePost[3][0]/1000), (10,250), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "y vel:   {0:4.2f} m/s".format(kalman.statePost[4][0]/1000), (10,300), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "z vel:   {0:4.2f} m/s".format(kalman.statePost[5][0]/1000), (10,350), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
+    cv2.putText(dst_l_copy, "abs vel: {0:4.2f} m/s".format(abs_vel/1000), (10,400), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.putText(dst_l_copy, out ,(10,500), cv2.FONT_HERSHEY_SIMPLEX, 1,(255,255,255),2)
     cv2.imshow('left' , dst_l_copy)
     video_out.write(dst_l_copy)
