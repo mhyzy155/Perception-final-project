@@ -127,3 +127,16 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# custom
+/calibration
+/calibration_copy
+/without_occlusions
+/without_occlusions2
+/with_occlusions
+*.zip
+Calibration.ipynb
+Disparity.ipynb
+/Models
+/debug
+*.avi
